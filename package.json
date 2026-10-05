@@ -1,0 +1,19 @@
+{
+  "name": "coretic-uren",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Urenregistratie met goedkeuring en facturatie naar e-Boekhouden.nl",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --env-file=.env --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  }
+}

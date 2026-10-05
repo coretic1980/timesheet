@@ -1,0 +1,1636 @@
+(() => {
+  'use strict';
+
+  const app = document.getElementById('app');
+  const state = { user: null, pendingCount: 0, sheet: null, invoicePeriod: null, reportPeriod: null };
+
+  /* ================= Hulpfuncties ================= */
+
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+  const nl = new Intl.NumberFormat('nl-NL', { maximumFractionDigits: 2 });
+  const eurFmt = new Intl.NumberFormat('nl-NL', { style: 'currency', currency: 'EUR' });
+  const fh = (n) => nl.format(n || 0);
+  const eur = (n) => eurFmt.format(n || 0);
+  const pct = (n) => (n === null || n === undefined ? '–' : `${Math.round(n * 100)}%`);
+  const DAYS = ['ma', 'di', 'wo', 'do', 'vr', 'za', 'zo'];
+  const DAYS_LONG = ['maandag', 'dinsdag', 'woensdag', 'donderdag', 'vrijdag', 'zaterdag', 'zondag'];
+  const MONTHS = ['jan', 'feb', 'mrt', 'apr', 'mei', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dec'];
+  const STATUS = {
+    draft: 'Concept', submitted: 'Ingediend', approved: 'Goedgekeurd', rejected: 'Afgekeurd', invoiced: 'Gefactureerd',
+  };
+  const EDITABLE = ['draft', 'rejected'];
+
+  const pad = (n) => String(n).padStart(2, '0');
+  function todayIso() {
+    const d = new Date();
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+  function addDays(iso, n) {
+    const d = new Date(`${iso}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  }
+  const dow = (iso) => (new Date(`${iso}T00:00:00Z`).getUTCDay() + 6) % 7;
+  const weekStart = (iso) => addDays(iso, -dow(iso));
+  function isoWeek(iso) {
+    const d = new Date(`${iso}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    return Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
+  }
+  function fmtDate(iso, withYear = false) {
+    const [y, m, d] = iso.split('-').map(Number);
+    return `${d} ${MONTHS[m - 1]}${withYear ? ` ${y}` : ''}`;
+  }
+  function fmtRange(a, b) {
+    const sameYear = a.slice(0, 4) === b.slice(0, 4);
+    return `${fmtDate(a, !sameYear)} – ${fmtDate(b, true)}`;
+  }
+  function monthBounds(offset = 0) {
+    const t = new Date();
+    const first = new Date(t.getFullYear(), t.getMonth() + offset, 1);
+    const last = new Date(t.getFullYear(), t.getMonth() + offset + 1, 0);
+    const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    return { from: iso(first), to: iso(last) };
+  }
+  // Accepteert 7,5 · 7.5 · 7:30
+  function parseHours(raw) {
+    const v = String(raw).trim();
+    if (v === '') return 0;
+    const time = v.match(/^(\d{1,2}):(\d{2})$/);
+    if (time) return Number(time[1]) + Number(time[2]) / 60;
+    if (!/^\d{0,2}([.,]\d{0,2})?$/.test(v)) return NaN;
+    return Math.round(parseFloat(v.replace(',', '.')) * 100) / 100;
+  }
+  const fmtInput = (h) => (h ? String(h).replace('.', ',') : '');
+
+  async function api(path, { method = 'GET', body } = {}) {
+    const res = await fetch(`/api${path}`, {
+      method,
+      credentials: 'same-origin',
+      headers: { 'X-Requested-With': 'fetch', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const isJson = (res.headers.get('content-type') || '').includes('json');
+    const data = isJson ? await res.json() : await res.text();
+    if (!res.ok) {
+      if (res.status === 401 && path !== '/auth/login' && state.user) {
+        state.user = null;
+        render();
+      }
+      throw new Error((data && data.error) || `Fout ${res.status}`);
+    }
+    return data;
+  }
+
+  function toast(message, isError = false) {
+    const el = document.createElement('div');
+    el.className = `toast${isError ? ' error' : ''}`;
+    el.textContent = message;
+    document.getElementById('toasts').appendChild(el);
+    setTimeout(() => el.remove(), isError ? 6000 : 3500);
+  }
+
+  function openDialog({ title, body, submit = 'Opslaan', danger = false, onSubmit, onOpen }) {
+    const dlg = document.createElement('dialog');
+    dlg.innerHTML = `
+      <form novalidate>
+        <h2>${esc(title)}</h2>
+        <div class="dialog-body stack">${body}</div>
+        <p class="err" hidden></p>
+        <div class="actions">
+          <button type="button" class="btn" data-cancel>Annuleren</button>
+          <button type="submit" class="btn ${danger ? 'danger' : 'primary'}">${esc(submit)}</button>
+        </div>
+      </form>`;
+    document.body.appendChild(dlg);
+    const form = dlg.querySelector('form');
+    const err = dlg.querySelector('.err');
+    dlg.querySelector('[data-cancel]').addEventListener('click', () => dlg.close());
+    dlg.addEventListener('close', () => dlg.remove());
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = form.querySelector('[type="submit"]');
+      btn.disabled = true;
+      err.hidden = true;
+      try {
+        const result = await onSubmit(new FormData(form), form);
+        if (result !== false) dlg.close();
+      } catch (ex) {
+        err.textContent = ex.message;
+        err.hidden = false;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    dlg.showModal();
+    if (onOpen) onOpen(form);
+    const first = form.querySelector('input:not([type="hidden"]):not(:disabled), select, textarea:not(:disabled)');
+    if (first) first.focus();
+    return dlg;
+  }
+
+  const confirmDialog = (title, text, submit, danger = false) => new Promise((resolve) => {
+    let ok = false;
+    const dlg = openDialog({
+      title, submit, danger, body: `<p>${text}</p>`,
+      onSubmit: () => { ok = true; },
+    });
+    dlg.addEventListener('close', () => resolve(ok));
+  });
+
+  const statusBadge = (s) => `<span class="badge ${s}">${STATUS[s] || s}</span>`;
+  const bar = (ratio) => {
+    const w = Math.max(0, Math.min(1, ratio || 0)) * 100;
+    return `<div class="bar${ratio > 1 ? ' over' : ''}"><span style="width:${w.toFixed(1)}%"></span></div>`;
+  };
+  const opt = (value, label, selected) => `<option value="${esc(value)}"${selected ? ' selected' : ''}>${esc(label)}</option>`;
+
+  /* ================= Router & shell ================= */
+
+  const ROUTES = {
+    uren: { title: 'Uren', render: viewTimesheet },
+    goedkeuren: { title: 'Goedkeuren', admin: true, render: viewApprovals },
+    facturen: { title: 'Facturen', admin: true, render: viewInvoicing },
+    rapportage: { title: 'Rapportage', admin: true, render: viewReports },
+    beheer: { title: 'Beheer', admin: true, render: viewAdmin },
+    account: { title: 'Account', hidden: true, render: viewAccount },
+  };
+
+  function currentRoute() {
+    const [name, ...params] = location.hash.replace(/^#\/?/, '').split('/');
+    return { name: ROUTES[name] ? name : 'uren', params };
+  }
+
+  function shellHTML(active) {
+    const isAdmin = state.user.role === 'admin';
+    const links = Object.entries(ROUTES)
+      .filter(([, r]) => !r.hidden && (!r.admin || isAdmin))
+      .map(([key, r]) => {
+        const badge = key === 'goedkeuren' && state.pendingCount
+          ? ` <span class="badge count">${state.pendingCount}</span>` : '';
+        return `<a href="#/${key}"${key === active ? ' aria-current="page"' : ''}>${r.title}${badge}</a>`;
+      }).join('');
+    return `
+      <header class="topbar">
+        <a class="brand" href="#/uren">Coretic <span>uren</span></a>
+        <nav class="nav" aria-label="Hoofdmenu">${links}</nav>
+        <div class="userbox">
+          <a href="#/account">${esc(state.user.name)}</a>
+          <button class="btn small ghost" type="button" data-logout>Uitloggen</button>
+        </div>
+      </header>
+      <main id="view"></main>`;
+  }
+
+  async function refreshPending() {
+    if (!state.user || state.user.role !== 'admin') return;
+    try {
+      const rows = await api('/approvals?status=submitted');
+      state.pendingCount = rows.length;
+      const link = document.querySelector('.nav a[href="#/goedkeuren"]');
+      if (link) {
+        link.innerHTML = `Goedkeuren${state.pendingCount ? ` <span class="badge count">${state.pendingCount}</span>` : ''}`;
+      }
+    } catch { /* niet kritiek */ }
+  }
+
+  async function render() {
+    if (!state.user) return renderLogin();
+    const { name, params } = currentRoute();
+    const route = ROUTES[name];
+    if (route.admin && state.user.role !== 'admin') {
+      location.hash = '#/uren';
+      return undefined;
+    }
+    app.innerHTML = shellHTML(name);
+    app.querySelector('[data-logout]').addEventListener('click', async () => {
+      await api('/auth/logout', { method: 'POST' }).catch(() => {});
+      state.user = null;
+      location.hash = '';
+      render();
+    });
+    document.title = `${route.title} – Coretic uren`;
+    const view = document.getElementById('view');
+    view.innerHTML = '<p class="muted">Laden…</p>';
+    refreshPending();
+    try {
+      await route.render(view, params);
+    } catch (e) {
+      view.innerHTML = `<div class="notice error">${esc(e.message)}</div>`;
+    }
+    return undefined;
+  }
+
+  window.addEventListener('hashchange', render);
+
+  /* ================= Inloggen ================= */
+
+  function renderLogin() {
+    document.title = 'Inloggen – Coretic uren';
+    app.innerHTML = `
+      <div class="login">
+        <div class="panel">
+          <h1>Coretic uren</h1>
+          <p class="muted">Log in om je uren te schrijven.</p>
+          <form id="login-form">
+            <label class="field">E-mailadres<input type="email" name="email" autocomplete="username" required></label>
+            <label class="field">Wachtwoord<input type="password" name="password" autocomplete="current-password" required></label>
+            <div class="notice error" hidden></div>
+            <button class="btn primary" type="submit">Inloggen</button>
+          </form>
+        </div>
+      </div>`;
+    const form = document.getElementById('login-form');
+    form.email.focus();
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = form.querySelector('.notice');
+      err.hidden = true;
+      try {
+        state.user = await api('/auth/login', {
+          method: 'POST', body: { email: form.email.value, password: form.password.value },
+        });
+        render();
+      } catch (ex) {
+        err.textContent = ex.message;
+        err.hidden = false;
+      }
+    });
+  }
+
+  /* ================= Urenstaat ================= */
+
+  const MODE_KEY = 'coretic-uren:weergave';
+
+  function sheetMode() {
+    if (state.sheetMode) return state.sheetMode;
+    let stored = null;
+    try { stored = localStorage.getItem(MODE_KEY); } catch { /* geen opslag beschikbaar */ }
+    // Zonder voorkeur: lijst op een smal scherm, raster op desktop.
+    state.sheetMode = stored === 'list' || stored === 'grid' ? stored : (window.innerWidth < 700 ? 'list' : 'grid');
+    return state.sheetMode;
+  }
+
+  function setSheetMode(mode) {
+    state.sheetMode = mode;
+    try { localStorage.setItem(MODE_KEY, mode); } catch { /* geen opslag beschikbaar */ }
+  }
+
+  async function viewTimesheet(view, params) {
+    const requested = /^\d{4}-\d{2}-\d{2}$/.test(params[0] || '') ? params[0] : todayIso();
+    const data = await api(`/timesheet?week=${weekStart(requested)}`);
+    data.map = new Map(data.entries.map((e) => [`${e.project_id}|${e.work_date}`, e]));
+    state.sheet = data;
+
+    view.innerHTML = '<div id="sheet-head"></div><div id="sheet-notices"></div><div id="sheet-body"></div>';
+
+    if (!data.projects.length) {
+      refreshSheetChrome(view);
+      view.querySelector('#sheet-body').innerHTML = `
+        <div class="panel empty">
+          <h2>Nog geen projecten</h2>
+          <p>${state.user.role === 'admin'
+            ? 'Maak een project aan en voeg jezelf toe aan het team via <a href="#/beheer/projecten">Beheer › Projecten</a>.'
+            : 'Je bent nog niet aan een project gekoppeld. Vraag je beheerder om je toe te voegen.'}</p>
+        </div>`;
+      return;
+    }
+
+    renderSheetBody(view);
+
+    view.addEventListener('change', (e) => {
+      if (e.target.matches('input.hrs')) saveCell(view, e.target);
+      if (e.target.matches('.list-entry [data-field]')) saveListRow(view, e.target.closest('li'));
+    });
+    view.addEventListener('input', (e) => {
+      if (e.target.matches('.le-desc-input')) autoGrow(e.target);
+    });
+    view.addEventListener('keydown', (e) => {
+      if (!e.target.matches('.list-entry [data-field]')) return;
+      if (e.key === 'Escape') {
+        // Terug naar de opgeslagen waarde
+        const entry = state.sheet.map.get(e.target.closest('li').dataset.key);
+        if (entry) {
+          e.target.value = e.target.dataset.field === 'hours' ? fmtInput(entry.hours) : entry.description;
+          if (e.target.dataset.field === 'description') autoGrow(e.target);
+        }
+        e.target.blur();
+      } else if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        e.target.blur(); // blur triggert 'change' en dus opslaan
+      }
+    });
+    view.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || !e.target.matches('input.hrs')) return;
+      e.preventDefault();
+      const date = e.target.dataset.date;
+      let tr = e.target.closest('tr').nextElementSibling;
+      while (tr) {
+        const next = tr.querySelector(`input.hrs[data-date="${date}"]:not(:disabled)`);
+        if (next) { next.focus(); next.select(); return; }
+        tr = tr.nextElementSibling;
+      }
+      e.target.blur();
+    });
+    view.addEventListener('pointerdown', (e) => {
+      const grip = e.target.closest('.grip');
+      if (grip && e.button === 0) startDrag(view, grip, e);
+    });
+    view.addEventListener('submit', (e) => {
+      if (e.target.id !== 'list-add') return;
+      e.preventDefault();
+      addListEntry(view, e.target);
+    });
+    view.addEventListener('click', (e) => {
+      const note = e.target.closest('button.note');
+      if (note) openNote(view, Number(note.closest('tr').dataset.project), note.dataset.date);
+      const act = e.target.closest('[data-sheet-action]');
+      if (act) sheetAction(view, act.dataset.sheetAction);
+      const mode = e.target.closest('[data-sheet-mode]');
+      if (mode && mode.dataset.sheetMode !== sheetMode()) {
+        setSheetMode(mode.dataset.sheetMode);
+        renderSheetBody(view);
+      }
+      const edit = e.target.closest('[data-list-edit]');
+      if (edit) editListEntry(view, edit.closest('li').dataset.key);
+      const del = e.target.closest('[data-list-delete]');
+      if (del) deleteListEntry(view, del.closest('li').dataset.key);
+    });
+  }
+
+  function renderSheetBody(view) {
+    const body = view.querySelector('#sheet-body');
+    body.innerHTML = sheetMode() === 'list' ? listHTML(state.sheet) : gridHTML(state.sheet);
+    body.querySelectorAll('.le-desc-input').forEach(autoGrow);
+    refreshSheetChrome(view);
+  }
+
+  const LEGEND = `
+    <span><i style="background:var(--draft)"></i>Concept</span>
+    <span><i style="background:var(--submitted)"></i>Ingediend</span>
+    <span><i style="background:var(--approved)"></i>Goedgekeurd</span>
+    <span><i style="background:var(--rejected)"></i>Afgekeurd</span>
+    <span><i style="background:var(--invoiced)"></i>Gefactureerd</span>`;
+
+  function gridHTML(data) {
+    const today = todayIso();
+    const head = data.days.map((d, i) => {
+      const cls = [i >= 5 ? 'weekend' : '', d === today ? 'today' : ''].join(' ').trim();
+      return `<th class="${cls}" scope="col"><span>${DAYS[i]}</span><span class="dnum">${Number(d.slice(8))}</span></th>`;
+    }).join('');
+
+    const rows = data.projects.map((p) => {
+      const cells = data.days.map((d, i) => {
+        const e = data.map.get(`${p.id}|${d}`);
+        const locked = (e && !EDITABLE.includes(e.status)) || !p.active;
+        return `
+          <td class="cell${i >= 5 ? ' weekend' : ''}${e ? ` s-${e.status}` : ''}" data-date="${d}">
+            <input class="hrs" inputmode="decimal" autocomplete="off" data-date="${d}"
+              aria-label="${esc(p.name)}, ${DAYS_LONG[i]} ${fmtDate(d)}"
+              value="${fmtInput(e && e.hours)}"${locked ? ' disabled' : ''}>
+            <button type="button" class="note${e && e.description ? ' has' : ''}" data-date="${d}"
+              aria-label="Omschrijving bij ${esc(p.name)}, ${DAYS_LONG[i]}"
+              title="${esc((e && e.description) || 'Omschrijving toevoegen')}"></button>
+            <span class="grip" aria-hidden="true" title="Sleep naar een andere dag (Ctrl of ⌥ om te kopiëren)"></span>
+          </td>`;
+      }).join('');
+      return `
+        <tr data-project="${p.id}">
+          <th class="proj" scope="row">
+            <span class="client">${esc(p.client_name || 'Intern')}</span>
+            <span class="name">${esc(p.name)}</span>
+            ${p.billable ? '' : '<span class="tag">Niet declarabel</span>'}
+          </th>
+          ${cells}
+          <td class="rowtotal" data-rowtotal></td>
+        </tr>`;
+    }).join('');
+
+    const foot = data.days.map((d, i) => `<td class="coltotal${i >= 5 ? ' weekend' : ''}" data-coltotal="${d}"></td>`).join('');
+
+    return `
+      <div class="grid-wrap">
+        <table class="grid">
+          <thead><tr><th class="proj" scope="col">Project</th>${head}<th class="rowtotal" scope="col">Totaal</th></tr></thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr><td class="proj muted">Per dag</td>${foot}<td class="rowtotal" data-weektotal></td></tr></tfoot>
+        </table>
+      </div>
+      <div class="legend">${LEGEND}
+        <span>Tip: 7:30 wordt 7,5 uur. Enter springt naar het volgende project. Sleep een vak aan ⠿ naar een andere dag; met Ctrl of ⌥ kopieer je.</span>
+      </div>`;
+  }
+
+  /* ---------- Lijstweergave ---------- */
+
+  const projectLabel = (p) => `${p.client_name || 'Intern'} / ${p.name}`;
+  const dayLabel = (d) => `${DAYS_LONG[dow(d)]} ${fmtDate(d)}`;
+
+  function dayOptions(data, selected) {
+    return data.days.map((d) => opt(d, dayLabel(d), d === selected)).join('');
+  }
+  function projectOptions(data, selected) {
+    return data.projects.filter((p) => p.active || p.id === selected)
+      .map((p) => opt(p.id, projectLabel(p), p.id === selected)).join('');
+  }
+
+  function listHTML(data) {
+    const today = todayIso();
+    const draft = state.listDraft || {};
+    const defDay = data.days.includes(draft.date) ? draft.date : (data.days.includes(today) ? today : data.days[0]);
+    const defProject = data.projects.some((p) => p.id === draft.project && p.active)
+      ? draft.project : (data.projects.find((p) => p.active) || {}).id;
+    const canAdd = data.projects.some((p) => p.active);
+
+    const form = canAdd ? `
+      <form class="panel list-add" id="list-add" autocomplete="off">
+        <label class="field">Dag<select name="date">${dayOptions(data, defDay)}</select></label>
+        <label class="field">Project<select name="project">${projectOptions(data, defProject)}</select></label>
+        <label class="field">Uren<input name="hours" inputmode="decimal" placeholder="7,5" required></label>
+        <label class="field grow">Omschrijving<input name="description" maxlength="1000" placeholder="Wat heb je gedaan?"></label>
+        <button class="btn primary" type="submit">Toevoegen</button>
+      </form>` : '';
+
+    const projById = new Map(data.projects.map((p) => [p.id, p]));
+    const entries = [...data.map.values()].sort((x, y) => x.work_date.localeCompare(y.work_date)
+      || projectLabel(projById.get(x.project_id)).localeCompare(projectLabel(projById.get(y.project_id))));
+
+    if (!entries.length) {
+      return `${form}<div class="panel empty"><h2>Nog geen uren deze week</h2><p>Vul hierboven je eerste regel in.</p></div>`;
+    }
+
+    const days = data.days.filter((d) => entries.some((e) => e.work_date === d)).map((d) => {
+      const list = entries.filter((e) => e.work_date === d);
+      const total = list.reduce((s, e) => s + e.hours, 0);
+      const items = list.map((e) => {
+        const p = projById.get(e.project_id);
+        const editable = EDITABLE.includes(e.status) && p.active;
+        return `
+          <li class="list-entry s-${e.status}${editable ? ' editable' : ''}" data-key="${e.project_id}|${e.work_date}">
+            <div class="le-main">
+              <span class="client">${esc(p.client_name || 'Intern')}${p.billable ? '' : ', niet declarabel'}</span>
+              <span class="name">${esc(p.name)}</span>
+              ${editable
+                ? `<textarea class="le-desc-input" data-field="description" rows="1" maxlength="1000"
+                     placeholder="Wat heb je gedaan?" aria-label="Omschrijving ${esc(p.name)}, ${dayLabel(e.work_date)}">${esc(e.description)}</textarea>`
+                : `<p class="le-desc">${e.description ? esc(e.description) : '<span class="muted">Geen omschrijving</span>'}</p>`}
+              ${e.status === 'rejected' && e.rejection_reason ? `<p class="le-reject">Afgekeurd: ${esc(e.rejection_reason)}</p>` : ''}
+            </div>
+            <div class="le-hours">${editable
+              ? `<input class="le-hours-input" data-field="hours" inputmode="decimal" autocomplete="off"
+                   value="${fmtInput(e.hours)}" aria-label="Uren ${esc(p.name)}, ${dayLabel(e.work_date)}">`
+              : fh(e.hours)}<span> uur</span></div>
+            <div class="le-status">${statusBadge(e.status)}<span class="le-saved" aria-live="polite"></span></div>
+            <div class="le-actions">${editable ? `
+              <button type="button" class="btn small" data-list-edit>Verplaatsen</button>
+              <button type="button" class="btn small ghost danger" data-list-delete aria-label="Verwijderen">Verwijderen</button>` : ''}
+            </div>
+          </li>`;
+      }).join('');
+      return `
+        <section class="panel list-day">
+          <header><h3>${dayLabel(d)}</h3><span class="muted" data-daytotal="${d}">${fh(total)} uur</span></header>
+          <ul class="list-entries">${items}</ul>
+        </section>`;
+    }).join('');
+
+    return `${form}${days}`;
+  }
+
+  async function addListEntry(view, form) {
+    const pid = Number(form.project.value);
+    const date = form.date.value;
+    const hours = parseHours(form.hours.value);
+    state.listDraft = { date, project: pid };
+    if (!hours || Number.isNaN(hours) || hours < 0 || hours > 24) {
+      toast('Vul een aantal uren in tussen 0 en 24, bijvoorbeeld 7,5 of 7:30', true);
+      form.hours.focus();
+      return;
+    }
+    const key = `${pid}|${date}`;
+    const existing = state.sheet.map.get(key);
+    if (existing && !EDITABLE.includes(existing.status)) {
+      toast('Op deze dag en dit project staan al ingediende of goedgekeurde uren', true);
+      return;
+    }
+    const total = Math.round(((existing ? existing.hours : 0) + hours) * 100) / 100;
+    if (total > 24) { toast('Samen wordt dat meer dan 24 uur', true); return; }
+    const description = [...new Set([existing && existing.description, form.description.value.trim()].filter(Boolean))].join('; ');
+    try {
+      const res = await api('/timesheet/entry', { method: 'PUT', body: { project_id: pid, work_date: date, hours: total, description } });
+      state.sheet.map.set(key, res);
+      renderSheetBody(view);
+      toast(existing ? `Opgeteld bij de ${fh(existing.hours)} uur die er al stond` : `${fh(hours)} uur toegevoegd`);
+      const again = view.querySelector('#list-add input[name="hours"]');
+      if (again) again.focus();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  function autoGrow(el) {
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }
+
+  // Inline opslaan van uren en omschrijving in de lijst.
+  async function saveListRow(view, li) {
+    const key = li.dataset.key;
+    const entry = state.sheet.map.get(key);
+    if (!entry) return;
+    const hoursEl = li.querySelector('[data-field="hours"]');
+    const descEl = li.querySelector('[data-field="description"]');
+    const hours = parseHours(hoursEl.value);
+    const description = descEl.value.trim();
+    if (Number.isNaN(hours) || hours < 0 || hours > 24) {
+      hoursEl.classList.add('error');
+      toast('Vul een aantal uren in tussen 0 en 24, bijvoorbeeld 7,5 of 7:30', true);
+      return;
+    }
+    hoursEl.classList.remove('error');
+    if (hours === entry.hours && description === entry.description) {
+      hoursEl.value = fmtInput(entry.hours);
+      return;
+    }
+    if (hours === 0) {
+      hoursEl.value = fmtInput(entry.hours);
+      await deleteListEntry(view, key);
+      return;
+    }
+    li.classList.add('saving');
+    try {
+      const res = await api('/timesheet/entry', {
+        method: 'PUT',
+        body: { project_id: entry.project_id, work_date: entry.work_date, hours, description },
+      });
+      state.sheet.map.set(key, res);
+      hoursEl.value = fmtInput(res.hours);
+      // Status kan veranderen (afgekeurd wordt weer concept): rij bijwerken zonder de focus te verliezen.
+      li.className = li.className.replace(/\bs-\w+/g, '').trim();
+      li.classList.add(`s-${res.status}`);
+      const badge = li.querySelector('.le-status .badge');
+      if (badge) badge.outerHTML = statusBadge(res.status);
+      if (res.status !== 'rejected') { const r = li.querySelector('.le-reject'); if (r) r.remove(); }
+      const dayEl = view.querySelector(`[data-daytotal="${entry.work_date}"]`);
+      if (dayEl) {
+        const sum = [...state.sheet.map.values()].filter((x) => x.work_date === entry.work_date).reduce((s, x) => s + x.hours, 0);
+        dayEl.textContent = `${fh(sum)} uur`;
+      }
+      refreshSheetChrome(view);
+      const saved = li.querySelector('.le-saved');
+      saved.textContent = 'Opgeslagen';
+      clearTimeout(saved._t);
+      saved._t = setTimeout(() => { saved.textContent = ''; }, 1800);
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      li.classList.remove('saving');
+    }
+  }
+
+  function editListEntry(view, key) {
+    const entry = state.sheet.map.get(key);
+    if (!entry) return;
+    const p = state.sheet.projects.find((x) => x.id === entry.project_id);
+    openDialog({
+      title: 'Regel verplaatsen',
+      submit: 'Verplaatsen',
+      body: `
+        <p class="muted small">${fh(entry.hours)} uur op ${esc(p.name)}, ${dayLabel(entry.work_date)}</p>
+        <div class="form-grid">
+          <label class="field">Naar dag<select name="date">${dayOptions(state.sheet, entry.work_date)}</select></label>
+          <label class="field">Naar project<select name="project">${projectOptions(state.sheet, entry.project_id)}</select></label>
+        </div>
+        <p class="muted small">Staat daar al iets, dan worden de uren opgeteld.</p>`,
+      onSubmit: async (fd) => {
+        const pid = Number(fd.get('project'));
+        const date = fd.get('date');
+        const { hours, description } = entry;
+        const newKey = `${pid}|${date}`;
+        if (newKey === key) return;
+        {
+          // Naar een andere dag of project: daar optellen, hier weghalen.
+          const target = state.sheet.map.get(newKey);
+          if (target && !EDITABLE.includes(target.status)) throw new Error('Op die dag en dat project staan al ingediende of goedgekeurde uren');
+          const total = Math.round(((target ? target.hours : 0) + hours) * 100) / 100;
+          if (total > 24) throw new Error('Samen wordt dat meer dan 24 uur');
+          const desc = [...new Set([target && target.description, description].filter(Boolean))].join('; ');
+          const res = await api('/timesheet/entry', { method: 'PUT', body: { project_id: pid, work_date: date, hours: total, description: desc } });
+          if (res.deleted) state.sheet.map.delete(newKey); else state.sheet.map.set(newKey, res);
+          await api('/timesheet/entry', { method: 'PUT', body: { project_id: entry.project_id, work_date: entry.work_date, hours: 0, description: '' } });
+          state.sheet.map.delete(key);
+          if (target) toast(`Opgeteld bij de ${fh(target.hours)} uur die er al stond`);
+        }
+        renderSheetBody(view);
+      },
+    });
+  }
+
+  async function deleteListEntry(view, key) {
+    const entry = state.sheet.map.get(key);
+    if (!entry) return;
+    const p = state.sheet.projects.find((x) => x.id === entry.project_id);
+    const ok = await confirmDialog('Regel verwijderen', `${fh(entry.hours)} uur op ${esc(p.name)}, ${dayLabel(entry.work_date)} verwijderen?`, 'Verwijderen', true);
+    if (!ok) return;
+    try {
+      await api('/timesheet/entry', { method: 'PUT', body: { project_id: entry.project_id, work_date: entry.work_date, hours: 0, description: '' } });
+      state.sheet.map.delete(key);
+      renderSheetBody(view);
+      toast('Regel verwijderd');
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  function weekNavHTML(data, prev, next) {
+    const entries = data.map ? [...data.map.values()] : [];
+    const count = (st) => entries.filter((e) => st.includes(e.status)).length;
+    const editable = count(EDITABLE);
+    const submitted = count(['submitted']);
+    let label = 'Nog leeg';
+    if (editable) label = 'Nog niet ingediend';
+    else if (submitted) label = 'Wacht op goedkeuring';
+    else if (entries.length) label = 'Goedgekeurd';
+    const total = entries.reduce((s, e) => s + e.hours, 0);
+    const isThisWeek = data.week_start === weekStart(todayIso());
+    return `
+      <div class="sheet-head">
+        <div class="week-nav">
+          <a class="btn" href="#/uren/${prev}" aria-label="Vorige week">‹</a>
+          <h1>Week ${isoWeek(data.week_start)}</h1>
+          <a class="btn" href="#/uren/${next}" aria-label="Volgende week">›</a>
+          ${isThisWeek ? '' : `<a class="btn ghost" href="#/uren/${todayIso()}">Deze week</a>`}
+          <span class="range">${fmtRange(data.week_start, data.week_end)}</span>
+        </div>
+        <div class="row">
+          <div class="seg" role="group" aria-label="Weergave">
+            <button type="button" data-sheet-mode="grid" aria-pressed="${sheetMode() === 'grid'}">Raster</button>
+            <button type="button" data-sheet-mode="list" aria-pressed="${sheetMode() === 'list'}">Lijst</button>
+          </div>
+          <div class="week-total"><strong>${fh(total)}</strong><span class="muted">van ${fh(data.weekly_hours)} uur</span></div>
+          <span class="muted">${label}</span>
+          ${submitted && !editable ? '<button class="btn" type="button" data-sheet-action="recall">Terughalen</button>' : ''}
+          <button class="btn primary" type="button" data-sheet-action="submit"${editable ? '' : ' disabled'}>Week indienen</button>
+        </div>
+      </div>`;
+  }
+
+  function refreshSheetChrome(view) {
+    const data = state.sheet;
+    const prev = addDays(data.week_start, -7);
+    const next = addDays(data.week_start, 7);
+    view.querySelector('#sheet-head').innerHTML = weekNavHTML(data, prev, next);
+
+    const rejected = [...data.map.values()].filter((e) => e.status === 'rejected');
+    view.querySelector('#sheet-notices').innerHTML = rejected.length
+      ? `<div class="notice error" style="margin-bottom:1rem">
+           <strong>${rejected.length === 1 ? 'Eén regel is' : `${rejected.length} regels zijn`} afgekeurd.</strong>
+           ${[...new Set(rejected.map((e) => e.rejection_reason))].map((r) => esc(r)).join(' ')}
+           Pas de uren aan en dien de week opnieuw in.
+         </div>`
+      : '';
+
+    if (!view.querySelector('table.grid')) return;
+    let week = 0;
+    for (const tr of view.querySelectorAll('tbody tr[data-project]')) {
+      const pid = Number(tr.dataset.project);
+      const sum = data.days.reduce((s, d) => s + ((data.map.get(`${pid}|${d}`) || {}).hours || 0), 0);
+      tr.querySelector('[data-rowtotal]').textContent = sum ? fh(sum) : '';
+      week += sum;
+    }
+    for (const d of data.days) {
+      const sum = [...data.map.values()].filter((e) => e.work_date === d).reduce((s, e) => s + e.hours, 0);
+      const td = view.querySelector(`[data-coltotal="${d}"]`);
+      td.textContent = sum ? fh(sum) : '';
+      td.classList.toggle('over', sum > 12);
+    }
+    view.querySelector('[data-weektotal]').textContent = fh(week);
+  }
+
+  function paintCell(td, entry) {
+    td.className = td.className.replace(/\bs-\w+/g, '').trim();
+    if (entry) td.classList.add(`s-${entry.status}`);
+    const note = td.querySelector('.note');
+    note.classList.toggle('has', Boolean(entry && entry.description));
+    note.title = (entry && entry.description) || 'Omschrijving toevoegen';
+  }
+
+  async function saveCell(view, input) {
+    const pid = Number(input.closest('tr').dataset.project);
+    const date = input.dataset.date;
+    const key = `${pid}|${date}`;
+    const existing = state.sheet.map.get(key);
+    const hours = parseHours(input.value);
+    if (Number.isNaN(hours) || hours < 0 || hours > 24) {
+      input.classList.add('error');
+      toast('Vul een aantal uren in tussen 0 en 24, bijvoorbeeld 7,5 of 7:30', true);
+      return;
+    }
+    input.classList.remove('error');
+    if ((existing ? existing.hours : 0) === hours) {
+      input.value = fmtInput(hours);
+      return;
+    }
+    input.classList.add('saving');
+    try {
+      const res = await api('/timesheet/entry', {
+        method: 'PUT',
+        body: { project_id: pid, work_date: date, hours, description: existing ? existing.description : '' },
+      });
+      if (res.deleted) state.sheet.map.delete(key);
+      else state.sheet.map.set(key, res);
+      input.value = fmtInput(res.deleted ? 0 : res.hours);
+      paintCell(input.closest('td'), res.deleted ? null : res);
+      refreshSheetChrome(view);
+    } catch (e) {
+      input.classList.add('error');
+      toast(e.message, true);
+    } finally {
+      input.classList.remove('saving');
+    }
+  }
+
+  /* Slepen: verplaatsen of (met Ctrl/Alt/⌘) kopiëren naar een ander vak */
+
+  function cellAt(view, pid, date) {
+    return view.querySelector(`tr[data-project="${pid}"] td[data-date="${date}"]`);
+  }
+
+  function updateCellUI(view, pid, date, entry) {
+    const td = cellAt(view, pid, date);
+    if (!td) return;
+    td.querySelector('input.hrs').value = fmtInput(entry && entry.hours);
+    paintCell(td, entry);
+  }
+
+  function startDrag(view, grip, ev) {
+    const td = grip.closest('td.cell');
+    if (td.querySelector('input.hrs').disabled) return;
+    const pid = Number(td.closest('tr').dataset.project);
+    const date = td.dataset.date;
+    const entry = state.sheet.map.get(`${pid}|${date}`);
+    if (!entry || !EDITABLE.includes(entry.status)) return;
+    ev.preventDefault();
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    grip.setPointerCapture(ev.pointerId);
+
+    const ghost = document.createElement('div');
+    ghost.className = 'drag-ghost';
+    document.body.appendChild(ghost);
+    document.body.classList.add('dragging');
+    td.classList.add('drag-source');
+    let target = null;
+    const isCopy = (e) => e.ctrlKey || e.altKey || e.metaKey;
+
+    const move = (e) => {
+      ghost.textContent = `${fh(entry.hours)} uur ${isCopy(e) ? 'kopiëren' : 'verplaatsen'}`;
+      ghost.style.transform = `translate(${e.clientX + 14}px, ${e.clientY + 14}px)`;
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const cell = el && el.closest('td.cell');
+      const ok = cell && view.contains(cell) && cell !== td && !cell.querySelector('input.hrs').disabled;
+      if (target && target !== cell) target.classList.remove('drop-target');
+      target = ok ? cell : null;
+      if (target) target.classList.add('drop-target');
+    };
+    const cleanup = () => {
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', finish);
+      grip.removeEventListener('pointercancel', cleanup);
+      document.removeEventListener('keydown', onKey);
+      ghost.remove();
+      document.body.classList.remove('dragging');
+      td.classList.remove('drag-source');
+      if (target) target.classList.remove('drop-target');
+    };
+    const finish = (e) => {
+      const dropOn = target;
+      cleanup();
+      if (dropOn) {
+        dropEntry(view, pid, date, Number(dropOn.closest('tr').dataset.project), dropOn.dataset.date, isCopy(e));
+      }
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { target = null; cleanup(); }
+    };
+
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', finish);
+    grip.addEventListener('pointercancel', cleanup);
+    document.addEventListener('keydown', onKey);
+    move(ev);
+  }
+
+  async function dropEntry(view, fromPid, fromDate, toPid, toDate, copy) {
+    const src = state.sheet.map.get(`${fromPid}|${fromDate}`);
+    if (!src) return;
+    const dstKey = `${toPid}|${toDate}`;
+    const dst = state.sheet.map.get(dstKey);
+    if (dst && !EDITABLE.includes(dst.status)) {
+      toast('Dat vak is al ingediend of goedgekeurd en kan niet meer veranderen', true);
+      return;
+    }
+    // Staat er al iets, dan tellen we op in plaats van te overschrijven.
+    const hours = Math.round(((dst ? dst.hours : 0) + src.hours) * 100) / 100;
+    if (hours > 24) {
+      toast('Samen wordt dat meer dan 24 uur in één vak', true);
+      return;
+    }
+    const description = [...new Set([dst && dst.description, src.description].filter(Boolean))].join('; ');
+    const where = `${DAYS_LONG[dow(toDate)]} ${fmtDate(toDate)}`;
+    try {
+      const res = await api('/timesheet/entry', {
+        method: 'PUT', body: { project_id: toPid, work_date: toDate, hours, description },
+      });
+      state.sheet.map.set(dstKey, res);
+      updateCellUI(view, toPid, toDate, res);
+      if (!copy) {
+        await api('/timesheet/entry', {
+          method: 'PUT', body: { project_id: fromPid, work_date: fromDate, hours: 0, description: '' },
+        });
+        state.sheet.map.delete(`${fromPid}|${fromDate}`);
+        updateCellUI(view, fromPid, fromDate, null);
+      }
+      refreshSheetChrome(view);
+      toast(`${fh(src.hours)} uur ${copy ? 'gekopieerd' : 'verplaatst'} naar ${where}${dst ? `, opgeteld bij ${fh(dst.hours)} uur` : ''}`);
+    } catch (e) {
+      toast(e.message, true);
+      refreshSheetChrome(view);
+    }
+  }
+
+  function openNote(view, pid, date) {
+    const key = `${pid}|${date}`;
+    const entry = state.sheet.map.get(key);
+    const project = state.sheet.projects.find((p) => p.id === pid);
+    if (!entry) {
+      toast('Vul eerst de uren in, dan kun je er een omschrijving bij zetten');
+      const input = view.querySelector(`tr[data-project="${pid}"] input[data-date="${date}"]`);
+      if (input && !input.disabled) input.focus();
+      return;
+    }
+    const locked = !EDITABLE.includes(entry.status);
+    openDialog({
+      title: `${project.name}, ${DAYS_LONG[dow(date)]} ${fmtDate(date)}`,
+      submit: locked ? 'Sluiten' : 'Opslaan',
+      body: `
+        ${entry.rejection_reason ? `<div class="notice error">Afgekeurd: ${esc(entry.rejection_reason)}</div>` : ''}
+        <p class="muted small">${fh(entry.hours)} uur, ${STATUS[entry.status].toLowerCase()}</p>
+        <label class="field">Wat heb je gedaan?
+          <textarea name="description" maxlength="1000"${locked ? ' disabled' : ''}>${esc(entry.description)}</textarea>
+        </label>`,
+      onSubmit: async (fd) => {
+        if (locked) return;
+        const res = await api('/timesheet/entry', {
+          method: 'PUT',
+          body: { project_id: pid, work_date: date, hours: entry.hours, description: fd.get('description') },
+        });
+        state.sheet.map.set(key, res);
+        paintCell(view.querySelector(`tr[data-project="${pid}"] td[data-date="${date}"]`), res);
+        refreshSheetChrome(view);
+      },
+    });
+  }
+
+  async function sheetAction(view, action) {
+    const week = state.sheet.week_start;
+    try {
+      if (action === 'submit') {
+        const missing = [...state.sheet.map.values()].filter((e) => EDITABLE.includes(e.status) && !e.description).length;
+        const extra = missing ? ` ${missing === 1 ? 'Eén regel heeft' : `${missing} regels hebben`} nog geen omschrijving.` : '';
+        const ok = await confirmDialog('Week indienen', `Na indienen kun je de uren niet meer wijzigen, tenzij je ze terughaalt.${extra}`, 'Week indienen');
+        if (!ok) return;
+        const res = await api('/timesheet/submit', { method: 'POST', body: { week } });
+        toast(`${res.submitted} ${res.submitted === 1 ? 'regel' : 'regels'} ingediend`);
+      } else if (action === 'recall') {
+        const res = await api('/timesheet/recall', { method: 'POST', body: { week } });
+        toast(`${res.recalled} ${res.recalled === 1 ? 'regel' : 'regels'} teruggehaald`);
+      }
+      render();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  /* ================= Goedkeuren ================= */
+
+  async function viewApprovals(view, params) {
+    const status = params[0] === 'goedgekeurd' ? 'approved' : 'submitted';
+    const rows = await api(`/approvals?status=${status}`);
+    if (status === 'submitted') state.pendingCount = rows.length;
+
+    const groups = new Map();
+    for (const r of rows) {
+      const key = `${r.user_id}|${weekStart(r.work_date)}`;
+      if (!groups.has(key)) groups.set(key, { user: r.user_name, week: weekStart(r.work_date), rows: [] });
+      groups.get(key).rows.push(r);
+    }
+
+    const tabs = `
+      <div class="tabs" role="tablist">
+        <button role="tab" aria-selected="${status === 'submitted'}" data-href="#/goedkeuren">Te beoordelen</button>
+        <button role="tab" aria-selected="${status === 'approved'}" data-href="#/goedkeuren/goedgekeurd">Goedgekeurd, nog niet gefactureerd</button>
+      </div>`;
+
+    const body = groups.size ? [...groups.values()].map((g, gi) => {
+      const total = g.rows.reduce((s, r) => s + r.hours, 0);
+      const actions = status === 'submitted'
+        ? `<button class="btn danger" data-act="reject" data-group="${gi}">Afkeuren</button>
+           <button class="btn primary" data-act="approve" data-group="${gi}">Goedkeuren</button>`
+        : `<button class="btn" data-act="reopen" data-group="${gi}">Terugzetten naar concept</button>`;
+      return `
+        <section class="panel approval-group" data-group="${gi}">
+          <header>
+            <div><span class="who">${esc(g.user)}</span>
+              <span class="muted">week ${isoWeek(g.week)}, ${fmtRange(g.week, addDays(g.week, 6))}</span></div>
+            <div class="row"><strong>${fh(total)} uur</strong>${actions}</div>
+          </header>
+          <div class="table-wrap"><table class="data">
+            <thead><tr>
+              <th><input type="checkbox" checked data-all aria-label="Alles selecteren"></th>
+              <th>Datum</th><th>Klant / project</th><th class="num">Uren</th>
+              ${status === 'approved' ? '<th class="num">Tarief</th>' : ''}<th>Omschrijving</th>
+            </tr></thead>
+            <tbody>${g.rows.map((r) => `
+              <tr>
+                <td><input type="checkbox" checked value="${r.id}" aria-label="Selecteer regel"></td>
+                <td class="nowrap">${DAYS[dow(r.work_date)]} ${fmtDate(r.work_date)}</td>
+                <td>${esc(r.client_name || 'Intern')} / ${esc(r.project_name)}${r.billable ? '' : ' <span class="muted small">(niet declarabel)</span>'}</td>
+                <td class="num">${fh(r.hours)}</td>
+                ${status === 'approved' ? `<td class="num">${eur(r.rate)}</td>` : ''}
+                <td>${esc(r.description) || '<span class="muted">Geen omschrijving</span>'}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table></div>
+        </section>`;
+    }).join('') : `
+      <div class="panel empty">
+        <h2>${status === 'submitted' ? 'Niets te beoordelen' : 'Geen openstaande goedgekeurde uren'}</h2>
+        <p>${status === 'submitted' ? 'Alle ingediende uren zijn verwerkt.' : 'Alles wat is goedgekeurd, is ook gefactureerd.'}</p>
+      </div>`;
+
+    view.innerHTML = `<div class="row spread" style="margin-bottom:1rem"><h1>Goedkeuren</h1></div>${tabs}${body}`;
+
+    view.querySelectorAll('[data-href]').forEach((b) => b.addEventListener('click', () => { location.hash = b.dataset.href; }));
+    view.addEventListener('change', (e) => {
+      if (!e.target.matches('[data-all]')) return;
+      e.target.closest('table').querySelectorAll('tbody input[type="checkbox"]').forEach((c) => { c.checked = e.target.checked; });
+    });
+    view.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      const section = view.querySelector(`section[data-group="${btn.dataset.group}"]`);
+      const ids = [...section.querySelectorAll('tbody input:checked')].map((c) => Number(c.value));
+      if (!ids.length) { toast('Selecteer eerst een of meer regels', true); return; }
+      try {
+        if (btn.dataset.act === 'approve') {
+          const res = await api('/approvals/approve', { method: 'POST', body: { ids } });
+          toast(`${res.approved} ${res.approved === 1 ? 'regel' : 'regels'} goedgekeurd`);
+          render();
+        } else if (btn.dataset.act === 'reopen') {
+          const res = await api('/approvals/reopen', { method: 'POST', body: { ids } });
+          toast(`${res.reopened} ${res.reopened === 1 ? 'regel' : 'regels'} teruggezet`);
+          render();
+        } else {
+          openDialog({
+            title: `${ids.length} ${ids.length === 1 ? 'regel' : 'regels'} afkeuren`,
+            submit: 'Afkeuren',
+            danger: true,
+            body: '<label class="field">Reden<span class="hint">De medewerker ziet deze tekst bij de afgekeurde uren.</span><textarea name="reason" required maxlength="500"></textarea></label>',
+            onSubmit: async (fd) => {
+              const res = await api('/approvals/reject', { method: 'POST', body: { ids, reason: fd.get('reason') } });
+              toast(`${res.rejected} ${res.rejected === 1 ? 'regel' : 'regels'} afgekeurd`);
+              render();
+            },
+          });
+        }
+      } catch (ex) {
+        toast(ex.message, true);
+      }
+    });
+  }
+
+  /* ================= Facturen ================= */
+
+  async function viewInvoicing(view) {
+    state.invoicePeriod = state.invoicePeriod || monthBounds(-1);
+    const { from, to } = state.invoicePeriod;
+    const [candidates, history] = await Promise.all([
+      api(`/invoicing/candidates?from=${from}&to=${to}`),
+      api('/invoicing/history'),
+    ]);
+
+    const candRows = candidates.map((c) => `
+      <tr>
+        <td>${esc(c.name)}</td>
+        <td>${c.eb_relation_id ? esc(c.eb_relation_code || `#${c.eb_relation_id}`) : '<a href="#/beheer/klanten">Nog koppelen</a>'}</td>
+        <td class="num">${fh(c.hours)}</td>
+        <td class="num">${eur(c.amount)}</td>
+        <td class="num">${c.open_hours ? `<span class="badge submitted">${fh(c.open_hours)} uur</span>` : ''}</td>
+        <td class="right"><button class="btn small" data-preview="${c.id}"${c.hours ? '' : ' disabled'}>Bekijk factuur</button></td>
+      </tr>`).join('');
+
+    const histRows = history.map((i) => `
+      <tr>
+        <td class="nowrap">${fmtDate(i.created_at.slice(0, 10), true)}</td>
+        <td>${esc(i.client_name)}</td>
+        <td class="nowrap">${fmtRange(i.period_from, i.period_to)}</td>
+        <td class="num">${fh(i.hours)}</td>
+        <td class="num">${eur(i.total_excl)}</td>
+        <td>${esc(i.eb_invoice_number || (i.eb_invoice_id ? `#${i.eb_invoice_id}` : '–'))}</td>
+        <td>${i.pdf_url ? `<a href="${esc(i.pdf_url)}" target="_blank" rel="noopener">PDF</a>` : ''}</td>
+      </tr>`).join('');
+
+    view.innerHTML = `
+      <div class="stack">
+        <h1>Facturen</h1>
+        <form class="panel panel-pad row" id="period">
+          <label class="field">Van<input type="date" name="from" value="${from}" required></label>
+          <label class="field">Tot en met<input type="date" name="to" value="${to}" required></label>
+          <div class="row" style="align-self:end">
+            <button class="btn" type="button" data-month="-1">Vorige maand</button>
+            <button class="btn" type="button" data-month="0">Deze maand</button>
+            <button class="btn primary" type="submit">Toon</button>
+          </div>
+        </form>
+        <section class="panel">
+          <div class="panel-pad"><h2>Te factureren</h2>
+            <p class="muted small">Alleen goedgekeurde uren op declarabele projecten. Uren die nog niet zijn goedgekeurd staan apart, zodat je ziet of je moet wachten.</p></div>
+          ${candidates.length ? `<div class="table-wrap"><table class="data">
+            <thead><tr><th>Klant</th><th>e-Boekhouden</th><th class="num">Goedgekeurd</th><th class="num">Bedrag excl. btw</th><th class="num">Nog niet goedgekeurd</th><th></th></tr></thead>
+            <tbody>${candRows}</tbody></table></div>`
+          : '<div class="empty"><p>Geen declarabele uren in deze periode.</p></div>'}
+        </section>
+        <div id="preview"></div>
+        <section class="panel">
+          <div class="panel-pad"><h2>Gemaakte facturen</h2></div>
+          ${history.length ? `<div class="table-wrap"><table class="data">
+            <thead><tr><th>Gemaakt</th><th>Klant</th><th>Periode</th><th class="num">Uren</th><th class="num">Excl. btw</th><th>Factuurnummer</th><th></th></tr></thead>
+            <tbody>${histRows}</tbody></table></div>`
+          : '<div class="empty"><p>Nog geen facturen gemaakt vanuit deze app.</p></div>'}
+        </section>
+      </div>`;
+
+    const form = view.querySelector('#period');
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      state.invoicePeriod = { from: form.from.value, to: form.to.value };
+      render();
+    });
+    view.querySelectorAll('[data-month]').forEach((b) => b.addEventListener('click', () => {
+      state.invoicePeriod = monthBounds(Number(b.dataset.month));
+      render();
+    }));
+    view.querySelectorAll('[data-preview]').forEach((b) => b.addEventListener('click', () => {
+      showInvoicePreview(view, Number(b.dataset.preview));
+    }));
+  }
+
+  async function showInvoicePreview(view, clientId) {
+    const { from, to } = state.invoicePeriod;
+    const box = view.querySelector('#preview');
+    box.innerHTML = '<p class="muted">Factuur voorbereiden…</p>';
+    try {
+      const p = await api(`/invoicing/preview?client_id=${clientId}&from=${from}&to=${to}`);
+      box.innerHTML = `
+        <section class="panel">
+          <div class="panel-pad stack">
+            <div class="row spread"><h2>Factuur voor ${esc(p.client.name)}</h2><span class="muted">${fmtRange(from, to)}</span></div>
+            ${p.client.eb_relation_id ? '' : '<div class="notice warn">Deze klant is nog niet gekoppeld aan een relatie in e-Boekhouden. Doe dat eerst onder <a href="#/beheer/klanten">Beheer › Klanten</a>.</div>'}
+          </div>
+          <div class="table-wrap"><table class="data">
+            <thead><tr><th>Omschrijving</th><th class="num">Uren</th><th class="num">Tarief</th><th class="num">Bedrag</th></tr></thead>
+            <tbody>${p.lines.map((l) => `<tr><td>${esc(l.description)}</td><td class="num">${fh(l.hours)}</td><td class="num">${eur(l.rate)}</td><td class="num">${eur(l.amount)}</td></tr>`).join('')}</tbody>
+            <tfoot><tr><td>Totaal excl. btw</td><td class="num">${fh(p.hours)}</td><td></td><td class="num">${eur(p.total_excl)}</td></tr></tfoot>
+          </table></div>
+          <form class="panel-pad stack" id="make-invoice">
+            <div class="form-grid">
+              <label class="field">Factuurdatum<input type="date" name="date" value="${todayIso()}" required></label>
+              <label class="field">Referentie<span class="hint">Bijvoorbeeld inkoopordernummer van de klant</span><input name="reference" maxlength="50"></label>
+            </div>
+            <div class="row">
+              <button class="btn" type="button" data-dry>Bekijk API-verzoek</button>
+              <button class="btn primary" type="submit"${p.client.eb_relation_id ? '' : ' disabled'}>Maak factuur in e-Boekhouden</button>
+            </div>
+            <div data-dry-out></div>
+          </form>
+        </section>`;
+      box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+      const form = box.querySelector('#make-invoice');
+      const payload = () => ({
+        client_id: clientId, from, to, date: form.date.value, reference: form.reference.value,
+      });
+      form.querySelector('[data-dry]').addEventListener('click', async () => {
+        const out = form.querySelector('[data-dry-out]');
+        try {
+          const res = await api('/invoicing/create', { method: 'POST', body: { ...payload(), dry_run: true } });
+          out.innerHTML = `<p class="muted small">Dit wordt naar e-Boekhouden gestuurd:</p><pre class="json">${esc(JSON.stringify(res.body, null, 2))}</pre>`;
+        } catch (e) {
+          out.innerHTML = `<div class="notice error">${esc(e.message)}</div>`;
+        }
+      });
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const ok = await confirmDialog(
+          'Factuur maken',
+          `Je maakt een factuur van ${eur(p.total_excl)} excl. btw voor ${esc(p.client.name)} in e-Boekhouden. De ${fh(p.hours)} uur worden daarna als gefactureerd gemarkeerd.`,
+          'Maak factuur'
+        );
+        if (!ok) return;
+        try {
+          const res = await api('/invoicing/create', { method: 'POST', body: payload() });
+          toast(`Factuur ${res.invoice.eb_invoice_number || ''} gemaakt in e-Boekhouden`.replace('  ', ' '));
+          render();
+        } catch (ex) {
+          toast(ex.message, true);
+        }
+      });
+    } catch (e) {
+      box.innerHTML = `<div class="notice error">${esc(e.message)}</div>`;
+    }
+  }
+
+  /* ================= Rapportage ================= */
+
+  async function viewReports(view) {
+    state.reportPeriod = state.reportPeriod || monthBounds(0);
+    const { from, to } = state.reportPeriod;
+    const r = await api(`/reports/summary?from=${from}&to=${to}`);
+
+    const users = r.byUser.map((u) => `
+      <tr>
+        <td>${esc(u.name)}</td>
+        <td class="num">${fh(u.hours)}</td>
+        <td class="num">${fh(u.billable_hours)}</td>
+        <td class="num">${fh(u.available_hours)}</td>
+        <td><div class="row" style="flex-wrap:nowrap">${bar(u.utilization)}<span class="nowrap">${pct(u.utilization)}</span></div></td>
+        <td class="num">${u.draft_hours ? fh(u.draft_hours) : ''}</td>
+        <td class="num">${u.submitted_hours ? fh(u.submitted_hours) : ''}</td>
+      </tr>`).join('');
+
+    const projects = r.byProject.map((p) => {
+      const ratio = p.budget_hours ? p.hours_all_time / p.budget_hours : null;
+      return `
+        <tr>
+          <td>${esc(p.client_name || 'Intern')} / ${esc(p.name)}${p.active ? '' : ' <span class="muted small">(afgesloten)</span>'}</td>
+          <td class="num">${fh(p.hours)}</td>
+          <td class="num">${fh(p.approved_hours)}</td>
+          <td class="num">${p.billable ? eur(p.value) : '–'}</td>
+          <td>${ratio === null ? '<span class="muted">Geen budget</span>'
+            : `<div class="row" style="flex-wrap:nowrap">${bar(ratio)}<span class="nowrap">${fh(p.hours_all_time)} / ${fh(p.budget_hours)}</span></div>`}</td>
+        </tr>`;
+    }).join('');
+
+    const totalValue = r.byProject.reduce((s, p) => s + (p.billable ? p.value : 0), 0);
+
+    view.innerHTML = `
+      <div class="stack">
+        <div class="row spread"><h1>Rapportage</h1>
+          <a class="btn" href="/api/reports/export.csv?from=${from}&to=${to}">Exporteer naar CSV</a></div>
+        <form class="panel panel-pad row" id="rperiod">
+          <label class="field">Van<input type="date" name="from" value="${from}" required></label>
+          <label class="field">Tot en met<input type="date" name="to" value="${to}" required></label>
+          <div class="row" style="align-self:end">
+            <button class="btn" type="button" data-month="-1">Vorige maand</button>
+            <button class="btn" type="button" data-month="0">Deze maand</button>
+            <button class="btn" type="button" data-year>Dit jaar</button>
+            <button class="btn primary" type="submit">Toon</button>
+          </div>
+        </form>
+        <p class="muted">${r.workdays} werkdagen${to > todayIso() ? ' tot en met vandaag' : ''}. Goedgekeurde omzet in deze periode: <strong>${eur(totalValue)}</strong> excl. btw.</p>
+        <section class="panel">
+          <div class="panel-pad"><h2>Medewerkers</h2>
+            <p class="muted small">Bezetting is declarabele uren gedeeld door contracturen, gerekend tot en met vandaag.</p></div>
+          <div class="table-wrap"><table class="data">
+            <thead><tr><th>Medewerker</th><th class="num">Geschreven</th><th class="num">Declarabel</th><th class="num">Beschikbaar</th><th>Bezetting</th><th class="num">Nog in te dienen</th><th class="num">Te beoordelen</th></tr></thead>
+            <tbody>${users}</tbody></table></div>
+        </section>
+        <section class="panel">
+          <div class="panel-pad"><h2>Projecten</h2>
+            <p class="muted small">Het budget telt alle geschreven uren sinds de start van het project.</p></div>
+          <div class="table-wrap"><table class="data">
+            <thead><tr><th>Klant / project</th><th class="num">Uren</th><th class="num">Goedgekeurd</th><th class="num">Waarde</th><th>Budget</th></tr></thead>
+            <tbody>${projects}</tbody></table></div>
+        </section>
+      </div>`;
+
+    const form = view.querySelector('#rperiod');
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      state.reportPeriod = { from: form.from.value, to: form.to.value };
+      render();
+    });
+    view.querySelectorAll('[data-month]').forEach((b) => b.addEventListener('click', () => {
+      state.reportPeriod = monthBounds(Number(b.dataset.month));
+      render();
+    }));
+    view.querySelector('[data-year]').addEventListener('click', () => {
+      const y = new Date().getFullYear();
+      state.reportPeriod = { from: `${y}-01-01`, to: `${y}-12-31` };
+      render();
+    });
+  }
+
+  /* ================= Beheer ================= */
+
+  const ADMIN_TABS = { medewerkers: 'Medewerkers', klanten: 'Klanten', projecten: 'Projecten', koppeling: 'Koppeling e-Boekhouden' };
+
+  async function viewAdmin(view, params) {
+    const tab = ADMIN_TABS[params[0]] ? params[0] : 'medewerkers';
+    view.innerHTML = `
+      <h1 style="margin-bottom:1rem">Beheer</h1>
+      <div class="tabs" role="tablist">${Object.entries(ADMIN_TABS).map(([k, label]) => `
+        <button role="tab" aria-selected="${k === tab}" data-href="#/beheer/${k}">${label}</button>`).join('')}</div>
+      <div id="tab"></div>`;
+    view.querySelectorAll('[data-href]').forEach((b) => b.addEventListener('click', () => { location.hash = b.dataset.href; }));
+    const el = view.querySelector('#tab');
+    await ({ medewerkers: adminUsers, klanten: adminClients, projecten: adminProjects, koppeling: adminEb })[tab](el);
+  }
+
+  function userForm(u = {}) {
+    return `
+      <div class="form-grid">
+        <label class="field">Naam<input name="name" value="${esc(u.name)}" required maxlength="120"></label>
+        ${u.id ? '' : '<label class="field">E-mailadres<input name="email" type="email" required></label>'}
+        <label class="field">Rol<select name="role">
+          ${opt('employee', 'Medewerker', u.role !== 'admin')}${opt('admin', 'Beheerder', u.role === 'admin')}</select></label>
+        <label class="field">Contracturen per week<input name="weekly_hours" inputmode="decimal" value="${fmtInput(u.weekly_hours ?? 40)}"></label>
+      </div>
+      <label class="field">${u.id ? 'Nieuw wachtwoord' : 'Wachtwoord'}
+        <span class="hint">${u.id ? 'Leeg laten om niet te wijzigen. ' : ''}Minstens 10 tekens. Geef het persoonlijk door.</span>
+        <input name="password" type="text" autocomplete="new-password"${u.id ? '' : ' required'} minlength="10"></label>
+      ${u.id ? `<label class="check"><input type="checkbox" name="active"${u.active ? ' checked' : ''}> Actief (kan inloggen en uren schrijven)</label>` : ''}`;
+  }
+
+  async function adminUsers(el) {
+    const users = await api('/admin/users');
+    el.innerHTML = `
+      <section class="panel">
+        <div class="panel-pad row spread"><h2>Medewerkers</h2><button class="btn primary" data-new>Medewerker toevoegen</button></div>
+        <div class="table-wrap"><table class="data">
+          <thead><tr><th>Naam</th><th>E-mailadres</th><th>Rol</th><th class="num">Uren per week</th><th>Status</th><th></th></tr></thead>
+          <tbody>${users.map((u) => `
+            <tr>
+              <td>${esc(u.name)}</td><td>${esc(u.email)}</td>
+              <td>${u.role === 'admin' ? 'Beheerder' : 'Medewerker'}</td>
+              <td class="num">${fh(u.weekly_hours)}</td>
+              <td>${u.active ? 'Actief' : '<span class="muted">Inactief</span>'}</td>
+              <td class="right"><button class="btn small" data-edit="${u.id}">Wijzigen</button></td>
+            </tr>`).join('')}</tbody>
+        </table></div>
+      </section>`;
+    el.querySelector('[data-new]').addEventListener('click', () => openDialog({
+      title: 'Medewerker toevoegen',
+      submit: 'Toevoegen',
+      body: userForm(),
+      onSubmit: async (fd) => {
+        await api('/admin/users', {
+          method: 'POST',
+          body: {
+            name: fd.get('name'), email: fd.get('email'), role: fd.get('role'),
+            weekly_hours: parseHours(fd.get('weekly_hours')), password: fd.get('password'),
+          },
+        });
+        toast('Medewerker toegevoegd. Koppel hem of haar nu aan projecten.');
+        adminUsers(el);
+      },
+    }));
+    el.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => {
+      const u = users.find((x) => x.id === Number(b.dataset.edit));
+      openDialog({
+        title: `${u.name} wijzigen`,
+        body: userForm(u),
+        onSubmit: async (fd) => {
+          const body = {
+            name: fd.get('name'), role: fd.get('role'),
+            weekly_hours: parseHours(fd.get('weekly_hours')), active: fd.get('active') === 'on',
+          };
+          if (fd.get('password')) body.password = fd.get('password');
+          await api(`/admin/users/${u.id}`, { method: 'PATCH', body });
+          toast('Opgeslagen');
+          adminUsers(el);
+        },
+      });
+    }));
+  }
+
+  async function adminClients(el) {
+    const clients = await api('/admin/clients');
+    el.innerHTML = `
+      <section class="panel">
+        <div class="panel-pad row spread"><h2>Klanten</h2><button class="btn primary" data-new>Klant toevoegen</button></div>
+        ${clients.length ? `<div class="table-wrap"><table class="data">
+          <thead><tr><th>Naam</th><th>Relatie in e-Boekhouden</th><th class="num">Projecten</th><th>Status</th><th></th></tr></thead>
+          <tbody>${clients.map((c) => `
+            <tr>
+              <td>${esc(c.name)}</td>
+              <td>${c.eb_relation_id ? `Code ${esc(c.eb_relation_code)}` : '<span class="muted">Niet gekoppeld</span>'}</td>
+              <td class="num">${c.project_count}</td>
+              <td>${c.active ? 'Actief' : '<span class="muted">Inactief</span>'}</td>
+              <td class="right nowrap">
+                ${c.eb_relation_id
+                  ? `<button class="btn small" data-unlink="${c.id}">Ontkoppelen</button>`
+                  : `<button class="btn small" data-link="${c.id}">Koppelen</button>`}
+                <button class="btn small" data-edit="${c.id}">Wijzigen</button>
+              </td>
+            </tr>`).join('')}</tbody>
+        </table></div>` : '<div class="empty"><p>Voeg je eerste klant toe en koppel hem aan een relatie in e-Boekhouden.</p></div>'}
+      </section>`;
+
+    el.querySelector('[data-new]').addEventListener('click', () => openDialog({
+      title: 'Klant toevoegen',
+      submit: 'Toevoegen',
+      body: '<label class="field">Naam<input name="name" required maxlength="200"></label>',
+      onSubmit: async (fd) => {
+        await api('/admin/clients', { method: 'POST', body: { name: fd.get('name') } });
+        adminClients(el);
+      },
+    }));
+
+    el.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => {
+      const c = clients.find((x) => x.id === Number(b.dataset.edit));
+      openDialog({
+        title: `${c.name} wijzigen`,
+        body: `<label class="field">Naam<input name="name" value="${esc(c.name)}" required maxlength="200"></label>
+               <label class="check"><input type="checkbox" name="active"${c.active ? ' checked' : ''}> Actief</label>`,
+        onSubmit: async (fd) => {
+          await api(`/admin/clients/${c.id}`, { method: 'PATCH', body: { name: fd.get('name'), active: fd.get('active') === 'on' } });
+          adminClients(el);
+        },
+      });
+    }));
+
+    el.querySelectorAll('[data-unlink]').forEach((b) => b.addEventListener('click', async () => {
+      const c = clients.find((x) => x.id === Number(b.dataset.unlink));
+      if (!(await confirmDialog('Ontkoppelen', `${esc(c.name)} loskoppelen van relatie ${esc(c.eb_relation_code)}? Er wordt niets verwijderd in e-Boekhouden.`, 'Ontkoppelen'))) return;
+      try {
+        await api(`/admin/clients/${c.id}/unlink`, { method: 'POST' });
+        adminClients(el);
+      } catch (e) { toast(e.message, true); }
+    }));
+
+    el.querySelectorAll('[data-link]').forEach((b) => b.addEventListener('click', () => {
+      const c = clients.find((x) => x.id === Number(b.dataset.link));
+      openDialog({
+        title: `${c.name} koppelen aan e-Boekhouden`,
+        submit: 'Koppelen',
+        body: `
+          <label class="field">Wat wil je doen?<select name="mode">
+            ${opt('existing', 'Bestaande relatie koppelen', true)}${opt('new', 'Nieuwe relatie aanmaken in e-Boekhouden', false)}</select></label>
+          <label class="field">Relatiecode<span class="hint">Zoals in e-Boekhouden onder Relaties</span><input name="code" required maxlength="15"></label>
+          <div data-newfields hidden class="form-grid">
+            <label class="field">E-mail voor facturen<input name="emailAddressInvoice" type="email"></label>
+            <label class="field">Adres<input name="address"></label>
+            <label class="field">Postcode<input name="postalCode"></label>
+            <label class="field">Plaats<input name="city"></label>
+            <label class="field">Btw-nummer<input name="vatNumber"></label>
+            <label class="field">Betaaltermijn (dagen)<input name="termOfPayment" inputmode="numeric" value="30"></label>
+          </div>`,
+        onOpen: (form) => {
+          form.mode.addEventListener('change', () => {
+            const isNew = form.mode.value === 'new';
+            form.querySelector('[data-newfields]').hidden = !isNew;
+            form.querySelector('[type="submit"]').textContent = isNew ? 'Aanmaken en koppelen' : 'Koppelen';
+          });
+        },
+        onSubmit: async (fd) => {
+          if (fd.get('mode') === 'new') {
+            const body = Object.fromEntries(['code', 'emailAddressInvoice', 'address', 'postalCode', 'city', 'vatNumber', 'termOfPayment']
+              .map((k) => [k, fd.get(k)]));
+            await api(`/admin/clients/${c.id}/create-relation`, { method: 'POST', body });
+            toast('Relatie aangemaakt in e-Boekhouden en gekoppeld');
+          } else {
+            const res = await api(`/admin/clients/${c.id}/link`, { method: 'POST', body: { code: fd.get('code') } });
+            toast(`Gekoppeld aan ${res.relation.name || res.relation.code}`);
+          }
+          adminClients(el);
+        },
+      });
+    }));
+  }
+
+  function projectForm(p, clients) {
+    return `
+      <div class="form-grid">
+        <label class="field">Klant<select name="client_id">
+          ${opt('', 'Intern (geen klant)', !p.client_id)}
+          ${clients.filter((c) => c.active || c.id === p.client_id).map((c) => opt(c.id, c.name, c.id === p.client_id)).join('')}
+        </select></label>
+        <label class="field">Projectnaam<input name="name" value="${esc(p.name)}" required maxlength="200"></label>
+        <label class="field">Code<span class="hint">Optioneel, komt op de factuurregel</span><input name="code" value="${esc(p.code)}" maxlength="30"></label>
+        <label class="field">Uurtarief (€)<span class="hint">Standaard; per medewerker aan te passen</span><input name="default_rate" inputmode="decimal" value="${fmtInput(p.default_rate)}"></label>
+        <label class="field">Budget (uren)<span class="hint">Optioneel</span><input name="budget_hours" inputmode="decimal" value="${fmtInput(p.budget_hours)}"></label>
+      </div>
+      <label class="check"><input type="checkbox" name="billable"${p.billable !== false ? ' checked' : ''}> Declarabel (uren komen op de factuur)</label>
+      ${p.id ? `<label class="check"><input type="checkbox" name="active"${p.active ? ' checked' : ''}> Actief (medewerkers kunnen erop schrijven)</label>` : ''}`;
+  }
+
+  const numOrNull = (v) => {
+    if (v === null || String(v).trim() === '') return null;
+    const n = parseFloat(String(v).replace(',', '.'));
+    return Number.isFinite(n) ? n : v;
+  };
+
+  async function adminProjects(el) {
+    const [projects, clients] = await Promise.all([api('/admin/projects'), api('/admin/clients')]);
+    el.innerHTML = `
+      <section class="panel">
+        <div class="panel-pad row spread"><h2>Projecten</h2><button class="btn primary" data-new>Project toevoegen</button></div>
+        ${projects.length ? `<div class="table-wrap"><table class="data">
+          <thead><tr><th>Klant / project</th><th>Code</th><th class="num">Tarief</th><th class="num">Budget</th><th class="num">Geschreven</th><th class="num">Team</th><th>Status</th><th></th></tr></thead>
+          <tbody>${projects.map((p) => `
+            <tr>
+              <td>${esc(p.client_name || 'Intern')} / ${esc(p.name)}${p.billable ? '' : ' <span class="muted small">(niet declarabel)</span>'}</td>
+              <td>${esc(p.code || '')}</td>
+              <td class="num">${p.billable ? eur(p.default_rate) : '–'}</td>
+              <td class="num">${p.budget_hours ? fh(p.budget_hours) : ''}</td>
+              <td class="num">${fh(p.hours_total)}</td>
+              <td class="num">${p.member_count}</td>
+              <td>${p.active ? 'Actief' : '<span class="muted">Afgesloten</span>'}</td>
+              <td class="right nowrap">
+                <button class="btn small" data-team="${p.id}">Team</button>
+                <button class="btn small" data-edit="${p.id}">Wijzigen</button>
+              </td>
+            </tr>`).join('')}</tbody>
+        </table></div>` : '<div class="empty"><p>Maak een project aan, bijvoorbeeld een detacheringsopdracht of "Intern / acquisitie".</p></div>'}
+      </section>`;
+
+    const collect = (fd) => ({
+      client_id: fd.get('client_id') ? Number(fd.get('client_id')) : null,
+      name: fd.get('name'),
+      code: fd.get('code'),
+      default_rate: numOrNull(fd.get('default_rate')) ?? 0,
+      budget_hours: numOrNull(fd.get('budget_hours')),
+      billable: fd.get('billable') === 'on',
+    });
+
+    el.querySelector('[data-new]').addEventListener('click', () => openDialog({
+      title: 'Project toevoegen',
+      submit: 'Toevoegen',
+      body: projectForm({ billable: true }, clients),
+      onSubmit: async (fd) => {
+        const p = await api('/admin/projects', { method: 'POST', body: collect(fd) });
+        toast('Project toegevoegd. Stel nu het team samen.');
+        await adminProjects(el);
+        openTeam(el, p);
+      },
+    }));
+
+    el.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => {
+      const p = projects.find((x) => x.id === Number(b.dataset.edit));
+      openDialog({
+        title: `${p.name} wijzigen`,
+        body: projectForm(p, clients),
+        onSubmit: async (fd) => {
+          await api(`/admin/projects/${p.id}`, { method: 'PATCH', body: { ...collect(fd), active: fd.get('active') === 'on' } });
+          adminProjects(el);
+        },
+      });
+    }));
+
+    el.querySelectorAll('[data-team]').forEach((b) => b.addEventListener('click', () => {
+      openTeam(el, projects.find((x) => x.id === Number(b.dataset.team)));
+    }));
+  }
+
+  async function openTeam(el, project) {
+    const members = await api(`/admin/projects/${project.id}/assignments`);
+    openDialog({
+      title: `Team van ${project.name}`,
+      body: `
+        <p class="muted small">Alleen teamleden zien dit project in hun urenstaat. Laat het tarief leeg om het projecttarief (${eur(project.default_rate)}) te gebruiken.</p>
+        <div class="table-wrap"><table class="data">
+          <thead><tr><th>Medewerker</th><th>Tarief (€)</th></tr></thead>
+          <tbody>${members.map((m) => `
+            <tr>
+              <td><label class="check"><input type="checkbox" name="u${m.user_id}"${m.assigned ? ' checked' : ''}> ${esc(m.name)}${m.active ? '' : ' <span class="muted small">(inactief)</span>'}</label></td>
+              <td><input name="r${m.user_id}" inputmode="decimal" value="${fmtInput(m.rate)}" placeholder="${fmtInput(project.default_rate)}" aria-label="Tarief ${esc(m.name)}" size="8"></td>
+            </tr>`).join('')}</tbody>
+        </table></div>`,
+      onSubmit: async (fd) => {
+        for (const m of members) {
+          const want = fd.get(`u${m.user_id}`) === 'on';
+          const rate = numOrNull(fd.get(`r${m.user_id}`));
+          if (want && (!m.assigned || rate !== m.rate)) {
+            await api(`/admin/projects/${project.id}/assignments/${m.user_id}`, { method: 'PUT', body: { rate } });
+          } else if (!want && m.assigned) {
+            await api(`/admin/projects/${project.id}/assignments/${m.user_id}`, { method: 'DELETE' });
+          }
+        }
+        toast('Team opgeslagen');
+        adminProjects(el);
+      },
+    });
+  }
+
+  async function adminEb(el) {
+    const s = await api('/admin/settings');
+    let options = null;
+    let optionsError = null;
+    if (s.eb_configured) {
+      try { options = await api('/admin/eb/options'); } catch (e) { optionsError = e.message; }
+    }
+    const e = s.eb;
+
+    const pick = (name, list, current, { filterCat, allowEmpty, emptyLabel } = {}) => {
+      if (!options) {
+        return `<input name="${name}" inputmode="numeric" value="${esc(current ?? '')}" placeholder="Interne id uit e-Boekhouden">`;
+      }
+      let items = list;
+      if (filterCat) {
+        const filtered = list.filter((x) => x.category === filterCat);
+        if (filtered.length) items = filtered;
+      }
+      return `<select name="${name}">
+        ${allowEmpty ? opt('', emptyLabel || 'Geen', !current) : (current ? '' : opt('', 'Kies…', true))}
+        ${items.map((x) => opt(x.id, x.label, x.id === current)).join('')}
+      </select>`;
+    };
+
+    el.innerHTML = `
+      <div class="stack">
+        ${s.eb_configured
+          ? '<div class="notice">Het API-token staat ingesteld op de server.</div>'
+          : '<div class="notice warn">Er is nog geen API-token ingesteld. Maak er een aan in e-Boekhouden (Beheer › API-tokens, kies "e-Boekhouden API") en zet het als <code>EB_API_TOKEN</code> in de omgevingsvariabelen op Render.</div>'}
+        ${optionsError ? `<div class="notice error">Keuzelijsten ophalen lukte niet: ${esc(optionsError)}. Je kunt de ids ook handmatig invullen.</div>` : ''}
+        <form class="panel panel-pad stack" id="eb-form">
+          <div class="row spread"><h2>Factuurinstellingen</h2>
+            <button class="btn" type="button" data-test${s.eb_configured ? '' : ' disabled'}>Test verbinding</button></div>
+          <div class="form-grid">
+            <label class="field">Factuursjabloon${pick('templateId', options && options.templates, e.templateId)}</label>
+            <label class="field">Omzetrekening<span class="hint">Bijvoorbeeld 8000 Omzet</span>${pick('revenueLedgerId', options && options.ledgers, e.revenueLedgerId, { filterCat: 'VW' })}</label>
+            <label class="field">Debiteurenrekening<span class="hint">Nodig om direct te verwerken</span>${pick('debtorLedgerId', options && options.ledgers, e.debtorLedgerId, { filterCat: 'DEB', allowEmpty: true })}</label>
+            <label class="field">Eenheid op factuurregel${pick('unitId', options && options.units, e.unitId, { allowEmpty: true, emptyLabel: 'Geen eenheid' })}</label>
+            <label class="field">Btw-code<select name="vatCode">${s.vat_codes.map((v) => opt(v, v, v === e.vatCode)).join('')}</select></label>
+            <label class="field">Betaaltermijn (dagen)<input name="termOfPayment" inputmode="numeric" value="${esc(e.termOfPayment)}"></label>
+          </div>
+          <label class="check"><input type="checkbox" name="process"${e.process ? ' checked' : ''}> Factuur direct verwerken in de boekhouding (wordt een openstaande post)</label>
+          <div><button class="btn primary" type="submit">Opslaan</button></div>
+        </form>
+      </div>`;
+
+    const form = el.querySelector('#eb-form');
+    form.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const fd = new FormData(form);
+      try {
+        await api('/admin/settings', {
+          method: 'PUT',
+          body: {
+            templateId: fd.get('templateId'), revenueLedgerId: fd.get('revenueLedgerId'),
+            debtorLedgerId: fd.get('debtorLedgerId'), unitId: fd.get('unitId'),
+            vatCode: fd.get('vatCode'), termOfPayment: fd.get('termOfPayment'), process: fd.get('process') === 'on',
+          },
+        });
+        toast('Instellingen opgeslagen');
+      } catch (ex) { toast(ex.message, true); }
+    });
+    const test = form.querySelector('[data-test]');
+    test.addEventListener('click', async () => {
+      test.disabled = true;
+      try {
+        await api('/admin/eb/test', { method: 'POST' });
+        toast('Verbinding met e-Boekhouden werkt');
+      } catch (ex) { toast(ex.message, true); } finally { test.disabled = false; }
+    });
+  }
+
+  /* ================= Account ================= */
+
+  async function viewAccount(view) {
+    view.innerHTML = `
+      <div class="stack" style="max-width:480px">
+        <h1>Account</h1>
+        <p class="muted">${esc(state.user.name)}, ${esc(state.user.email)}</p>
+        <form class="panel panel-pad stack" id="pw">
+          <h2>Wachtwoord wijzigen</h2>
+          <label class="field">Huidig wachtwoord<input type="password" name="current" autocomplete="current-password" required></label>
+          <label class="field">Nieuw wachtwoord<span class="hint">Minstens 10 tekens</span><input type="password" name="next" autocomplete="new-password" minlength="10" required></label>
+          <div><button class="btn primary" type="submit">Wachtwoord wijzigen</button></div>
+        </form>
+      </div>`;
+    const form = view.querySelector('#pw');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        await api('/auth/password', { method: 'POST', body: { current: form.current.value, next: form.next.value } });
+        form.reset();
+        toast('Wachtwoord gewijzigd. Andere apparaten zijn uitgelogd.');
+      } catch (ex) { toast(ex.message, true); }
+    });
+  }
+
+  /* ================= Start ================= */
+
+  (async () => {
+    try {
+      state.user = await api('/auth/me');
+    } catch {
+      state.user = null;
+    }
+    render();
+  })();
+})();
