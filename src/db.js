@@ -66,6 +66,11 @@ const EB_DEFAULTS = {
   vatCode: 'HOOG_VERK_21',
   termOfPayment: 30,
   process: true,
+  lineMode: 'entry',                                   // 'entry' = één regel per uurregel, 'grouped' = samengevoegd
+  lineFormat: '[DATUM] | [ACTIVITEIT] | [OPMERKING]',
+  emailDefault: false,
+  emailSubject: 'Factuur [KLANT] [PERIODE]',
+  emailBody: 'Beste relatie,\n\nHierbij ontvangt u de factuur voor de uren over [PERIODE].\n\nMet vriendelijke groet,\nDVN Technology BV',
 };
 
 async function getEbSettings() {

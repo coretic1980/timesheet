@@ -298,8 +298,9 @@
     return `${p ? p.name : 'Project'}${a ? `, ${a.name}` : ''}`;
   }
 
-  // Welke rijen staan in de urenstaat: alles met uren deze week, de combinaties van vorige week,
-  // zelf toegevoegde regels, en projecten zonder activiteiten.
+  // Welke rijen staan in de urenstaat: elk actief project waaraan je bent toegewezen (één regel per
+  // actieve activiteit, of één regel als het project geen activiteiten heeft), plus alles met uren deze week,
+  // de combinaties van vorige week en zelf toegevoegde regels.
   function sheetRows(data) {
     const rows = [];
     const seen = new Set();
@@ -321,7 +322,12 @@
       if (r.activity_id ? (a && a.active) : !activeActivities(p).length) add(r.project_id, r.activity_id);
     }
     for (const k of state.extraRows[data.week_start] || []) { const { pid, aid } = parseKey(k); add(pid, aid); }
-    for (const p of data.projects) if (p.active && !activeActivities(p).length) add(p.id, 0);
+    for (const p of data.projects) {
+      if (!p.active || p.assigned === false) continue;
+      const acts = activeActivities(p);
+      if (acts.length) acts.forEach((a) => add(p.id, a.id));
+      else add(p.id, 0);
+    }
     const label = (r) => `${r.project.client_name || ''}|${r.project.name}|${r.activity ? r.activity.name : ''}`;
     rows.sort((x, y) => (Number(!x.project.client_name) - Number(!y.project.client_name)) || label(x).localeCompare(label(y), 'nl'));
     return rows;
@@ -1201,6 +1207,7 @@
           <div class="panel-pad stack">
             <div class="row spread"><h2>Factuur voor ${esc(p.client.name)}</h2><span class="muted">${fmtRange(from, to)}</span></div>
             ${p.client.eb_relation_id ? '' : '<div class="notice warn">Deze klant is nog niet gekoppeld aan een relatie in e-Boekhouden. Doe dat eerst onder <a href="#/beheer/klanten">Beheer › Klanten</a>.</div>'}
+            <p class="muted small">${LINE_MODES[p.line_mode]}, opmaak <code>${esc(p.line_format)}</code>. Aan te passen per klant onder Beheer › Klanten.</p>
           </div>
           <div class="table-wrap"><table class="data">
             <thead><tr><th>Omschrijving</th><th class="num">Uren</th><th class="num">Tarief</th><th class="num">Bedrag</th></tr></thead>
@@ -1212,6 +1219,7 @@
               <label class="field">Factuurdatum<input type="date" name="date" value="${todayIso()}" required></label>
               <label class="field">Referentie<span class="hint">Bijvoorbeeld inkoopordernummer van de klant</span><input name="reference" maxlength="50"></label>
             </div>
+            <label class="check"><input type="checkbox" name="send_email"${p.email_default ? ' checked' : ''}> Factuur direct mailen naar de klant (naar het factuur-e-mailadres in e-Boekhouden)</label>
             <div class="row">
               <button class="btn" type="button" data-dry>Bekijk API-verzoek</button>
               <button class="btn primary" type="submit"${p.client.eb_relation_id ? '' : ' disabled'}>Maak factuur in e-Boekhouden</button>
@@ -1224,6 +1232,7 @@
       const form = box.querySelector('#make-invoice');
       const payload = () => ({
         client_id: clientId, from, to, date: form.date.value, reference: form.reference.value,
+        send_email: form.send_email.checked,
       });
       form.querySelector('[data-dry]').addEventListener('click', async () => {
         const out = form.querySelector('[data-dry-out]');
@@ -1238,13 +1247,13 @@
         e.preventDefault();
         const ok = await confirmDialog(
           'Factuur maken',
-          `Je maakt een factuur van ${eur(p.total_excl)} excl. btw voor ${esc(p.client.name)} in e-Boekhouden. De ${fh(p.hours)} uur worden daarna als gefactureerd gemarkeerd.`,
+          `Je maakt een factuur van ${eur(p.total_excl)} excl. btw voor ${esc(p.client.name)} in e-Boekhouden${form.send_email.checked ? ' en e-Boekhouden mailt hem direct naar de klant' : ''}. De ${fh(p.hours)} uur worden daarna als gefactureerd gemarkeerd.`,
           'Maak factuur'
         );
         if (!ok) return;
         try {
           const res = await api('/invoicing/create', { method: 'POST', body: payload() });
-          toast(`Factuur ${res.invoice.eb_invoice_number || ''} gemaakt in e-Boekhouden`.replace('  ', ' '));
+          toast(`Factuur ${res.invoice.eb_invoice_number || ''} gemaakt in e-Boekhouden${res.emailed ? ' en gemaild naar de klant' : ''}`.replace('  ', ' '));
           render();
         } catch (ex) {
           toast(ex.message, true);
@@ -1456,14 +1465,27 @@
       },
     }));
 
-    el.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => {
+    el.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', async () => {
       const c = clients.find((x) => x.id === Number(b.dataset.edit));
+      const s = (await api('/admin/settings')).eb;
+      const defaults = { mode: s.lineMode, format: s.lineFormat };
       openDialog({
         title: `${c.name} wijzigen`,
+        wide: true,
         body: `<label class="field">Naam<input name="name" value="${esc(c.name)}" required maxlength="200"></label>
-               <label class="check"><input type="checkbox" name="active"${c.active ? ' checked' : ''}> Actief</label>`,
+               <label class="check"><input type="checkbox" name="active"${c.active ? ' checked' : ''}> Actief</label>
+               <h3>Factuurregels voor deze klant</h3>
+               <p class="muted small">Laat leeg om de standaardinstelling te gebruiken (Beheer › Koppeling).</p>
+               ${lineFormatFields({ mode: c.invoice_line_mode, format: c.invoice_line_format, allowDefault: true, defaults })}`,
+        onOpen: (form) => bindLineFormatFields(form, defaults),
         onSubmit: async (fd) => {
-          await api(`/admin/clients/${c.id}`, { method: 'PATCH', body: { name: fd.get('name'), active: fd.get('active') === 'on' } });
+          await api(`/admin/clients/${c.id}`, {
+            method: 'PATCH',
+            body: {
+              name: fd.get('name'), active: fd.get('active') === 'on',
+              invoice_line_mode: fd.get('lineMode') || null, invoice_line_format: fd.get('lineFormat') || null,
+            },
+          });
           adminClients(el);
         },
       });
@@ -2056,11 +2078,22 @@
             <label class="field">Betaaltermijn (dagen)<input name="termOfPayment" inputmode="numeric" value="${esc(e.termOfPayment)}"></label>
           </div>
           <label class="check"><input type="checkbox" name="process"${e.process ? ' checked' : ''}> Factuur direct verwerken in de boekhouding (wordt een openstaande post)</label>
+
+          <h3>Factuurregels</h3>
+          <p class="muted small">Standaard voor alle klanten; per klant aan te passen onder Klanten. Dezelfde codes als in e-Boekhouden, plus [PROJECTCODE] en [MEDEWERKER].</p>
+          ${lineFormatFields({ mode: e.lineMode, format: e.lineFormat })}
+
+          <h3>Factuur mailen</h3>
+          <label class="check"><input type="checkbox" name="emailDefault"${e.emailDefault ? ' checked' : ''}> Facturen standaard direct mailen naar de klant</label>
+          <p class="muted small">e-Boekhouden mailt de factuur naar het factuur-e-mailadres van de relatie. Per factuur kun je dit nog aan- of uitzetten. Codes: [KLANT] en [PERIODE].</p>
+          <label class="field">Onderwerp<input name="emailSubject" value="${esc(e.emailSubject)}" maxlength="200" required></label>
+          <label class="field">Tekst<textarea name="emailBody" rows="6" maxlength="5000" required>${esc(e.emailBody)}</textarea></label>
           <div><button class="btn primary" type="submit">Opslaan</button></div>
         </form>
       </div>`;
 
     const form = el.querySelector('#eb-form');
+    bindLineFormatFields(form);
     form.addEventListener('submit', async (ev) => {
       ev.preventDefault();
       const fd = new FormData(form);
@@ -2071,6 +2104,8 @@
             templateId: fd.get('templateId'), revenueLedgerId: fd.get('revenueLedgerId'),
             debtorLedgerId: fd.get('debtorLedgerId'), unitId: fd.get('unitId'),
             vatCode: fd.get('vatCode'), termOfPayment: fd.get('termOfPayment'), process: fd.get('process') === 'on',
+            lineMode: fd.get('lineMode'), lineFormat: fd.get('lineFormat'),
+            emailDefault: fd.get('emailDefault') === 'on', emailSubject: fd.get('emailSubject'), emailBody: fd.get('emailBody'),
           },
         });
         toast('Instellingen opgeslagen');
@@ -2084,6 +2119,61 @@
         toast('Verbinding met e-Boekhouden werkt');
       } catch (ex) { toast(ex.message, true); } finally { test.disabled = false; }
     });
+  }
+
+  /* ---------- Opmaak factuurregel ---------- */
+
+  const LINE_CODES = ['DATUM', 'PROJECT', 'PROJECTCODE', 'ACTIVITEIT', 'OPMERKING', 'MEDEWERKER'];
+  const LINE_MODES = { entry: 'Eén regel per uurregel', grouped: 'Samengevoegd per project, activiteit en medewerker' };
+
+  // Zelfde regels als op de server, alleen voor het voorbeeld in beeld.
+  function renderLineExample(format, mode) {
+    const vars = {
+      DATUM: mode === 'grouped' ? '01-09-2026 t/m 30-09-2026' : '01-09-2026',
+      PROJECT: 'Discover & Enhance : PO 5473-1', PROJECTCODE: '',
+      ACTIVITEIT: 'Neptune Software Architect',
+      OPMERKING: mode === 'grouped' ? 'Workshop key-users; Datamodel uitgewerkt' : 'Workshop key-users',
+      MEDEWERKER: state.user ? state.user.name : 'Medewerker',
+    };
+    let out = String(format || '').replace(/\[(DATUM|PROJECTCODE|PROJECT|ACTIVITEIT|OPMERKING|MEDEWERKER)\]/gi, (m, k) => vars[k.toUpperCase()] || '');
+    out = out.replace(/\s*([|–,;/])\s*(?:[|–,;/]\s*)+/g, ' $1 ');
+    return out.replace(/^[\s|–,;/:]+|[\s|–,;/:]+$/g, '').replace(/\s{2,}/g, ' ');
+  }
+
+  // Codeknoppen die de code op de cursorpositie invoegen, plus een live voorbeeld.
+  function lineFormatFields({ mode, format, allowDefault = false, defaults = {} }) {
+    return `
+      <div class="form-grid">
+        <label class="field">Factuurregels
+          <select name="lineMode">
+            ${allowDefault ? opt('', `Standaard (${LINE_MODES[defaults.mode] ? LINE_MODES[defaults.mode].toLowerCase() : ''})`, !mode) : ''}
+            ${Object.entries(LINE_MODES).map(([k, v]) => opt(k, v, mode === k)).join('')}
+          </select></label>
+        <label class="field">Opmaak factuurregel
+          <input name="lineFormat" value="${esc(format || '')}" maxlength="300"${allowDefault ? ` placeholder="${esc(defaults.format || '')} (standaard)"` : ' required'}></label>
+      </div>
+      <div class="row small"><span class="muted">Codes:</span>${LINE_CODES.map((c) => `<button type="button" class="btn small" data-code="${c}">[${c}]</button>`).join('')}</div>
+      <p class="small"><span class="muted">Voorbeeld:</span> <span data-line-example></span></p>`;
+  }
+
+  function bindLineFormatFields(form, defaults = {}) {
+    const update = () => {
+      const mode = form.lineMode.value || defaults.mode || 'entry';
+      const format = form.lineFormat.value || defaults.format || '';
+      form.querySelector('[data-line-example]').textContent = renderLineExample(format, mode) || '(leeg)';
+    };
+    form.querySelectorAll('[data-code]').forEach((b) => b.addEventListener('click', () => {
+      const input = form.lineFormat;
+      const code = `[${b.dataset.code}]`;
+      const pos = input.selectionStart ?? input.value.length;
+      input.value = input.value.slice(0, pos) + code + input.value.slice(input.selectionEnd ?? pos);
+      input.focus();
+      input.setSelectionRange(pos + code.length, pos + code.length);
+      update();
+    }));
+    form.lineMode.addEventListener('change', update);
+    form.lineFormat.addEventListener('input', update);
+    update();
   }
 
   /* ================= Account ================= */

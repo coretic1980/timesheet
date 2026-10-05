@@ -97,6 +97,12 @@ r.patch('/clients/:id', ah(async (req, res) => {
   const u = updater();
   if (req.body.name !== undefined) u.set('name', str(req.body.name, { name: 'Naam', max: 200 }));
   if (req.body.active !== undefined) u.set('active', Boolean(req.body.active));
+  if (req.body.invoice_line_mode !== undefined) {
+    u.set('invoice_line_mode', ['entry', 'grouped'].includes(req.body.invoice_line_mode) ? req.body.invoice_line_mode : null);
+  }
+  if (req.body.invoice_line_format !== undefined) {
+    u.set('invoice_line_format', str(req.body.invoice_line_format, { name: 'Opmaak factuurregel', max: 300, required: false }) || null);
+  }
   const { rows } = await query(...u.sql('clients', id, '*'));
   if (!rows[0]) throw new HttpError(404, 'Klant niet gevonden');
   res.json(rows[0]);
@@ -430,6 +436,11 @@ r.put('/settings', ah(async (req, res) => {
     vatCode: b.vatCode || 'HOOG_VERK_21',
     termOfPayment: num(b.termOfPayment ?? 30, { min: 0, max: 365, name: 'betaaltermijn' }),
     process: b.process !== false,
+    lineMode: b.lineMode === 'grouped' ? 'grouped' : 'entry',
+    lineFormat: str(b.lineFormat, { name: 'Opmaak factuurregel', max: 300 }),
+    emailDefault: Boolean(b.emailDefault),
+    emailSubject: str(b.emailSubject, { name: 'Onderwerp', max: 200 }),
+    emailBody: str(b.emailBody, { name: 'Tekst e-mail', max: 5000 }),
   };
   await setEbSettings(value);
   res.json(value);

@@ -6,7 +6,7 @@ const eb = require('../eboekhouden');
 const r = express.Router();
 
 const BILLABLE_SQL = (lock) => `
-  SELECT e.id, e.hours, e.rate, e.work_date, e.user_id, u.name AS user_name,
+  SELECT e.id, e.hours, e.rate, e.work_date, e.description, e.user_id, u.name AS user_name,
          e.project_id, p.name AS project_name, p.code AS project_code,
          e.activity_id, ac.name AS activity_name
     FROM time_entries e
@@ -15,7 +15,7 @@ const BILLABLE_SQL = (lock) => `
     LEFT JOIN activities ac ON ac.id = e.activity_id
    WHERE p.client_id = $1 AND p.billable AND e.status = 'approved' AND e.invoice_id IS NULL
      AND e.work_date BETWEEN $2 AND $3
-   ORDER BY p.name, ac.name NULLS FIRST, u.name, e.work_date
+   ORDER BY e.work_date, p.name, ac.name NULLS FIRST, u.name
    ${lock ? 'FOR UPDATE OF e' : ''}`;
 
 function parsePeriod(src) {
@@ -25,19 +25,54 @@ function parsePeriod(src) {
   return { from, to };
 }
 
-// Eén factuurregel per project × activiteit × medewerker × tarief.
-function buildLines(entries) {
+// Opmaak per klant, anders de standaardinstelling.
+function lineSettings(client, s) {
+  return {
+    mode: client.invoice_line_mode || s.lineMode || 'entry',
+    format: client.invoice_line_format || s.lineFormat || '[DATUM] | [ACTIVITEIT] | [OPMERKING]',
+  };
+}
+
+// Vult de codes in, zoals in e-Boekhouden: [DATUM] [PROJECT] [PROJECTCODE] [ACTIVITEIT] [OPMERKING] [MEDEWERKER].
+// Lege codes laten geen losse scheidingstekens achter.
+function renderLine(format, vars) {
+  let out = format.replace(/\[(DATUM|PROJECTCODE|PROJECT|ACTIVITEIT|OPMERKING|MEDEWERKER)\]/gi, (m, k) => vars[k.toUpperCase()] || '');
+  out = out.replace(/\s*([|–,;/])\s*(?:[|–,;/]\s*)+/g, ' $1 ');
+  out = out.replace(/^[\s|–,;/:]+|[\s|–,;/:]+$/g, '').replace(/\s{2,}/g, ' ');
+  return out.slice(0, 1000);
+}
+
+const dateRange = (a, b) => (a === b ? fmtDateNl(a) : `${fmtDateNl(a)} t/m ${fmtDateNl(b)}`);
+
+function checkRate(e) {
+  if (e.rate === null || e.rate === undefined) {
+    throw new HttpError(400, `Uren van ${e.user_name} op ${e.project_name} hebben geen tarief. Heropen en keur ze opnieuw goed.`);
+  }
+}
+
+// mode 'entry': één factuurregel per uurregel (zoals e-Boekhouden).
+// mode 'grouped': één regel per project × activiteit × medewerker × tarief.
+function buildLines(entries, { mode, format }) {
+  if (mode === 'entry') {
+    return entries.map((e) => {
+      checkRate(e);
+      return {
+        ids: [e.id], hours: e.hours, rate: e.rate, amount: round2(e.hours * e.rate),
+        description: renderLine(format, {
+          DATUM: fmtDateNl(e.work_date), PROJECT: e.project_name, PROJECTCODE: e.project_code,
+          ACTIVITEIT: e.activity_name, OPMERKING: e.description, MEDEWERKER: e.user_name,
+        }),
+      };
+    });
+  }
   const groups = new Map();
   for (const e of entries) {
-    if (e.rate === null || e.rate === undefined) {
-      throw new HttpError(400, `Uren van ${e.user_name} op ${e.project_name} hebben geen tarief. Heropen en keur ze opnieuw goed.`);
-    }
+    checkRate(e);
     const key = `${e.project_id}|${e.activity_id || 0}|${e.user_id}|${e.rate}`;
     if (!groups.has(key)) {
       groups.set(key, {
-        project_id: e.project_id, project_name: e.project_name, project_code: e.project_code,
-        activity_name: e.activity_name,
-        user_name: e.user_name, rate: e.rate, hours: 0, first: e.work_date, last: e.work_date, ids: [],
+        project_name: e.project_name, project_code: e.project_code, activity_name: e.activity_name,
+        user_name: e.user_name, rate: e.rate, hours: 0, first: e.work_date, last: e.work_date, ids: [], notes: [],
       });
     }
     const g = groups.get(key);
@@ -45,17 +80,26 @@ function buildLines(entries) {
     if (e.work_date < g.first) g.first = e.work_date;
     if (e.work_date > g.last) g.last = e.work_date;
     g.ids.push(e.id);
+    if (e.description && !g.notes.includes(e.description)) g.notes.push(e.description);
   }
   return [...groups.values()].map((g) => ({
-    ...g,
-    amount: round2(g.hours * g.rate),
-    description: `${g.project_code ? `${g.project_code} ` : ''}${g.project_name}`
-      + `${g.activity_name ? ` – ${g.activity_name}` : ''} – ${g.user_name}, `
-      + `${fmtDateNl(g.first)} t/m ${fmtDateNl(g.last)}`,
+    ids: g.ids, hours: g.hours, rate: g.rate, amount: round2(g.hours * g.rate),
+    description: renderLine(format, {
+      DATUM: dateRange(g.first, g.last), PROJECT: g.project_name, PROJECTCODE: g.project_code,
+      ACTIVITEIT: g.activity_name, OPMERKING: g.notes.join('; '), MEDEWERKER: g.user_name,
+    }),
   }));
 }
 
-function buildInvoiceBody(client, lines, s, { from, to, reference, date }) {
+function fillMail(text, client, from, to) {
+  return String(text || '')
+    .replace(/\[KLANT\]/gi, client.name)
+    .replace(/\[PERIODE\]/gi, dateRange(from, to));
+}
+
+const escHtml = (t) => t.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+
+function buildInvoiceBody(client, lines, s, { from, to, reference, date, sendEmail }) {
   if (!client.eb_relation_id) throw new HttpError(400, 'Koppel deze klant eerst aan een relatie in e-Boekhouden (Beheer › Klanten)');
   if (!s.templateId || !s.revenueLedgerId) {
     throw new HttpError(400, 'Kies eerst een factuursjabloon en omzetrekening (Beheer › Koppeling)');
@@ -69,7 +113,7 @@ function buildInvoiceBody(client, lines, s, { from, to, reference, date }) {
     date,
     termOfPayment: s.termOfPayment,
     items: lines.map((l) => ({
-      description: l.description.slice(0, 1000),
+      description: l.description,
       quantity: l.hours,
       pricePerUnit: l.rate,
       vatCode: s.vatCode,
@@ -81,7 +125,14 @@ function buildInvoiceBody(client, lines, s, { from, to, reference, date }) {
   if (s.process) {
     body.mutation = {
       ledgerId: s.debtorLedgerId,
-      description: `Uren ${client.name} ${fmtDateNl(from)} t/m ${fmtDateNl(to)}`.slice(0, 200),
+      description: `Uren ${client.name} ${dateRange(from, to)}`.slice(0, 200),
+    };
+  }
+  if (sendEmail) {
+    // e-Boekhouden mailt de factuur naar het factuur-e-mailadres van de relatie.
+    body.email = {
+      subject: fillMail(s.emailSubject, client, from, to).slice(0, 200),
+      body: escHtml(fillMail(s.emailBody, client, from, to)).split('\n').join('<br>'),
     };
   }
   return body;
@@ -118,9 +169,14 @@ r.get('/candidates', ah(async (req, res) => {
 r.get('/preview', ah(async (req, res) => {
   const { from, to } = parsePeriod(req.query);
   const client = await loadClient(intParam(req.query.client_id, 'klant'));
+  const settings = await getEbSettings();
+  const ls = lineSettings(client, settings);
   const entries = (await query(BILLABLE_SQL(false), [client.id, from, to])).rows;
-  const lines = buildLines(entries);
-  res.json({ client, from, to, lines, ...totals(lines) });
+  const lines = buildLines(entries, ls);
+  res.json({
+    client, from, to, lines, ...totals(lines),
+    line_mode: ls.mode, line_format: ls.format, email_default: Boolean(settings.emailDefault),
+  });
 }));
 
 r.post('/create', ah(async (req, res) => {
@@ -129,20 +185,22 @@ r.post('/create', ah(async (req, res) => {
   const reference = str(req.body.reference, { name: 'Referentie', max: 50, required: false });
   const date = req.body.date ? isoDate(req.body.date, 'factuurdatum') : todayIso();
   const settings = await getEbSettings();
+  const ls = lineSettings(client, settings);
+  const sendEmail = Boolean(req.body.send_email);
 
   if (req.body.dry_run) {
     const entries = (await query(BILLABLE_SQL(false), [client.id, from, to])).rows;
     if (!entries.length) throw new HttpError(400, 'Geen goedgekeurde, nog niet gefactureerde uren in deze periode');
-    const lines = buildLines(entries);
-    const body = buildInvoiceBody(client, lines, settings, { from, to, reference, date });
+    const lines = buildLines(entries, ls);
+    const body = buildInvoiceBody(client, lines, settings, { from, to, reference, date, sendEmail });
     return res.json({ dry_run: true, body, ...totals(lines) });
   }
 
   const result = await tx(async (db) => {
     const entries = (await db.query(BILLABLE_SQL(true), [client.id, from, to])).rows;
     if (!entries.length) throw new HttpError(400, 'Geen goedgekeurde, nog niet gefactureerde uren in deze periode');
-    const lines = buildLines(entries);
-    const body = buildInvoiceBody(client, lines, settings, { from, to, reference, date });
+    const lines = buildLines(entries, ls);
+    const body = buildInvoiceBody(client, lines, settings, { from, to, reference, date, sendEmail });
     const sum = totals(lines);
 
     const created = await eb.createInvoice(body);
@@ -167,7 +225,7 @@ r.post('/create', ah(async (req, res) => {
       `UPDATE time_entries SET status = 'invoiced', invoice_id = $1, updated_at = now() WHERE id = ANY($2)`,
       [ins.rows[0].id, entries.map((e) => e.id)]
     );
-    return { invoice: ins.rows[0], lines };
+    return { invoice: ins.rows[0], lines, emailed: sendEmail };
   });
 
   res.status(201).json(result);

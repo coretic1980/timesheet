@@ -27,6 +27,10 @@ CREATE TABLE IF NOT EXISTS clients (
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Factuurregels per klant (NULL = standaardinstelling)
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS invoice_line_mode TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS invoice_line_format TEXT;
+
 CREATE TABLE IF NOT EXISTS projects (
   id           SERIAL PRIMARY KEY,
   client_id    INT REFERENCES clients(id),    -- NULL = intern project

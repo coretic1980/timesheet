@@ -488,3 +488,6 @@ td.empty-row { padding: 1.5rem 1rem; text-align: center; color: var(--muted); }
   .list-add { grid-template-columns: 1fr 1fr 1fr; }
   .list-add .grow, .list-add button { grid-column: 1 / -1; }
 }
+
+#eb-form h3, dialog h3 { margin-top: 0.5rem; }
+[data-line-example] { font-weight: 500; }
