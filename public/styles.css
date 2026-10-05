@@ -628,3 +628,6 @@ table.grid .proj .budget-line { flex-wrap: wrap; gap: 0.1rem 0.35rem; }
 table.grid .proj .budget-line .bbar { order: 2; flex-basis: 100%; min-width: 0; }
 table.grid .proj .budget-line .nowrap::before { content: attr(data-kind) ' '; font-weight: 600; }
 table.grid .proj { overflow: hidden; }
+
+.po-input { width: 11rem; max-width: 100%; padding: 0.25rem 0.45rem; }
+.po-input.missing { border-style: dashed; border-color: var(--submitted); }

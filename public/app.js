@@ -1516,22 +1516,25 @@
       const p = await api(`/invoicing/preview?client_id=${clientId}&from=${from}&to=${to}${q}`);
       const selected = new Set(projectIds || p.projects.map((x) => x.id));
       const multiPo = p.references.length > 1;
-      const projectPicker = p.projects.length > 1 ? `
+      const many = p.projects.length > 1;
+      const projectPicker = p.projects.length ? `
         <div class="stack">
-          <h3>Projecten op deze factuur</h3>
+          <h3>${many ? 'Projecten op deze factuur' : 'Project op deze factuur'}</h3>
           <div class="table-wrap"><table class="data">
             <thead><tr><th></th><th>Project</th><th>PO / referentie</th><th class="num">Uren</th><th class="num">Bedrag</th><th></th></tr></thead>
             <tbody>${p.projects.map((x) => `
               <tr>
-                <td><input type="checkbox" data-proj="${x.id}"${selected.has(x.id) ? ' checked' : ''} aria-label="${esc(x.name)}"></td>
+                <td>${many ? `<input type="checkbox" data-proj="${x.id}"${selected.has(x.id) ? ' checked' : ''} aria-label="${esc(x.name)}">` : ''}</td>
                 <td>${esc(x.name)}</td>
-                <td>${x.reference ? esc(x.reference) : '<span class="muted">–</span>'}</td>
+                <td><input class="po-input${x.reference ? '' : ' missing'}" data-proj-ref="${x.id}" value="${esc(x.reference || '')}" maxlength="50"
+                  placeholder="${esc(poFromName(x.name) || 'PO toevoegen')}" aria-label="PO / referentie van ${esc(x.name)}"
+                  title="Wordt opgeslagen bij het project"></td>
                 <td class="num">${fh(x.hours)}</td>
                 <td class="num">${eur(x.amount)}</td>
-                <td class="right"><button type="button" class="btn small" data-proj-only="${x.id}">Alleen ${x.reference ? 'deze PO' : 'dit project'}</button></td>
+                <td class="right">${many ? `<button type="button" class="btn small" data-proj-only="${x.id}">Alleen ${x.reference ? 'deze PO' : 'dit project'}</button>` : ''}</td>
               </tr>`).join('')}</tbody>
           </table></div>
-          <p class="muted small">Maak per PO een aparte factuur: klik op "Alleen deze PO", maak de factuur, en doe daarna hetzelfde voor de volgende.</p>
+          <p class="muted small">De PO / referentie wordt opgeslagen bij het project en komt als referentie op de factuur.${many ? ' Maak per PO een aparte factuur met "Alleen deze PO".' : ''}</p>
         </div>` : '';
       box.innerHTML = `
         <section class="panel">
@@ -1551,7 +1554,7 @@
             <div class="form-grid">
               <label class="field">Factuurnummer<span class="hint">Volgende vrije nummer${p.invoice_number.source === 'e-Boekhouden' ? ' in e-Boekhouden' : ' (e-Boekhouden niet bereikbaar, gebaseerd op de app)'}</span><input name="invoice_number" maxlength="30" value="${esc(p.invoice_number.number)}"></label>
               <label class="field">Factuurdatum<input type="date" name="date" value="${todayIso()}" required></label>
-              <label class="field">Referentie<span class="hint">${p.reference ? 'Ingevuld vanuit de PO van het project' : 'Bijvoorbeeld inkoopordernummer van de klant'}</span><input name="reference" maxlength="50" value="${esc(p.reference || '')}"></label>
+              <label class="field">Referentie<span class="hint">${p.reference ? 'Ingevuld vanuit de PO van het project' : 'Het project heeft nog geen PO; vul die hierboven in'}</span><input name="reference" maxlength="50" value="${esc(p.reference || '')}"></label>
             </div>
             <label class="field">Factuurtekst<input name="text" maxlength="2000" value="${esc(p.invoice_text || '')}"></label>
             <label class="check"><input type="checkbox" name="send_email"${p.email_default ? ' checked' : ''}> Factuur direct mailen naar de klant (naar het factuur-e-mailadres in e-Boekhouden${p.email_template ? ', met het gekozen e-mailsjabloon' : ''})</label>
@@ -1569,6 +1572,21 @@
       box.querySelectorAll('[data-proj]').forEach((c) => c.addEventListener('change', () => {
         showInvoicePreview(view, clientId, currentIds());
       }));
+      // PO direct bij het project opslaan en de factuur opnieuw opbouwen.
+      box.querySelectorAll('[data-proj-ref]').forEach((inp) => {
+        const save = async () => {
+          const proj = p.projects.find((x) => x.id === Number(inp.dataset.projRef));
+          const value = inp.value.trim();
+          if (value === (proj.reference || '')) return;
+          try {
+            await api(`/admin/projects/${proj.id}`, { method: 'PATCH', body: { reference: value } });
+            toast(value ? `PO ${value} opgeslagen bij ${proj.name}` : `PO verwijderd bij ${proj.name}`);
+            showInvoicePreview(view, clientId, projectIds);
+          } catch (e) { toast(e.message, true); }
+        };
+        inp.addEventListener('change', save);
+        inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); inp.blur(); } });
+      });
       box.querySelectorAll('[data-proj-only]').forEach((b) => b.addEventListener('click', () => {
         // Alle projecten met dezelfde PO, of alleen dit project als het geen PO heeft.
         const proj = p.projects.find((x) => x.id === Number(b.dataset.projOnly));
