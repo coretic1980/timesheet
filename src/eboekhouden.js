@@ -117,7 +117,34 @@ async function findRelationByCode(code) {
   return items.find((r) => String(r.code || '').toLowerCase() === wanted) || null;
 }
 
+// Alle relaties, met naam. De lijst-endpoint geeft niet altijd de naam mee;
+// in dat geval halen we de details per relatie op. Vijf minuten gecachet.
+let relationCache = null;
+async function relations({ fresh = false } = {}) {
+  if (!fresh && relationCache && relationCache.at > Date.now() - 5 * 60 * 1000) return relationCache.items;
+  const list = await listAll('/v1/relation');
+  const missing = list.filter((r) => !r.name).slice(0, 500);
+  for (let i = 0; i < missing.length; i += 5) {
+    await Promise.all(missing.slice(i, i + 5).map(async (r) => {
+      try {
+        const d = await request('GET', `/v1/relation/${r.id}`);
+        if (d) Object.assign(r, { name: d.name, inactive: d.inactive, type: d.type || r.type });
+      } catch { /* naam blijft leeg; we vallen terug op de code */ }
+    }));
+  }
+  const items = list.map((r) => ({
+    id: r.id,
+    code: r.code || '',
+    name: r.name || r.code || `Relatie ${r.id}`,
+    type: r.type || '',
+    inactive: Boolean(r.inactive),
+  })).sort((a, b) => a.name.localeCompare(b.name, 'nl'));
+  relationCache = { at: Date.now(), items };
+  return items;
+}
+
 module.exports = {
+  relations,
   EbError,
   configured,
   request,

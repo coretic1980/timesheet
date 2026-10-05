@@ -1,7 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const { query, getEbSettings, setEbSettings } = require('../db');
-const { ah, HttpError, str, num, intParam } = require('../util');
+const { query, tx, getEbSettings, setEbSettings } = require('../db');
+const { ah, HttpError, str, num, intParam, normName } = require('../util');
 const eb = require('../eboekhouden');
 
 const r = express.Router();
@@ -159,6 +159,7 @@ r.get('/projects', ah(async (req, res) => {
   const { rows } = await query(
     `SELECT p.*, c.name AS client_name,
             (SELECT count(*)::int FROM assignments a WHERE a.project_id = p.id) AS member_count,
+            (SELECT count(*)::int FROM project_activities pa WHERE pa.project_id = p.id) AS activity_count,
             (SELECT coalesce(sum(e.hours), 0) FROM time_entries e WHERE e.project_id = p.id) AS hours_total
        FROM projects p LEFT JOIN clients c ON c.id = p.client_id
       ORDER BY p.active DESC, c.name NULLS LAST, p.name`
@@ -203,6 +204,179 @@ r.patch('/projects/:id', ah(async (req, res) => {
     rows[0].billable = false;
   }
   res.json(rows[0]);
+}));
+
+// Import van projecten, bijvoorbeeld de export uit e-Boekhouden (Uren > Configuratie > Projecten).
+r.post('/projects/import', ah(async (req, res) => {
+  const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
+  if (!rows.length) throw new HttpError(400, 'Het bestand bevat geen projecten');
+  if (rows.length > 1000) throw new HttpError(400, 'Maximaal 1000 projecten per import');
+  const internal = normName(req.body.internal_name);
+  const rate = num(req.body.default_rate || 0, { min: 0, max: 10000, name: 'tarief' });
+  const addMe = req.body.add_me !== false;
+
+  // Relaties uit e-Boekhouden ophalen om nieuwe klanten meteen te koppelen (niet fataal als het mislukt).
+  let relByName = new Map();
+  let ebError = null;
+  if (eb.configured() && req.body.match_eb !== false) {
+    try {
+      relByName = new Map((await eb.relations()).filter((x) => !x.inactive).map((x) => [normName(x.name), x]));
+    } catch (e) {
+      ebError = e.message;
+    }
+  }
+
+  const result = await tx(async (db) => {
+    const byName = new Map((await db.query('SELECT id, name, eb_relation_id FROM clients')).rows.map((c) => [normName(c.name), c]));
+    const existing = new Set((await db.query('SELECT name, client_id FROM projects')).rows
+      .map((p) => `${p.client_id || 0}|${p.name.trim().toLowerCase()}`));
+    const out = { created: 0, skipped: 0, clients_created: 0, clients_linked: 0, eb_error: ebError };
+
+    for (const row of rows) {
+      const name = str(row.project, { name: 'Projectnaam', max: 200 });
+      const relation = str(row.relation, { name: 'Relatie', max: 200, required: false });
+      const isInternal = !relation || (internal && normName(relation) === internal);
+      let clientId = null;
+      if (!isInternal) {
+        const rel = relByName.get(normName(relation));
+        let client = byName.get(normName(relation));
+        if (!client) {
+          client = (await db.query(
+            'INSERT INTO clients (name, eb_relation_id, eb_relation_code) VALUES ($1, $2, $3) RETURNING id, name, eb_relation_id',
+            [relation, rel ? rel.id : null, rel ? rel.code : null]
+          )).rows[0];
+          byName.set(normName(relation), client);
+          out.clients_created += 1;
+          if (rel) out.clients_linked += 1;
+        } else if (!client.eb_relation_id && rel) {
+          await db.query('UPDATE clients SET eb_relation_id = $1, eb_relation_code = $2 WHERE id = $3', [rel.id, rel.code, client.id]);
+          client.eb_relation_id = rel.id;
+          out.clients_linked += 1;
+        }
+        clientId = client.id;
+      }
+      const key = `${clientId || 0}|${name.toLowerCase()}`;
+      if (existing.has(key)) { out.skipped += 1; continue; }
+      existing.add(key);
+      const project = (await db.query(
+        `INSERT INTO projects (client_id, name, default_rate, billable) VALUES ($1, $2, $3, $4) RETURNING id`,
+        [clientId, name, isInternal ? 0 : rate, !isInternal]
+      )).rows[0];
+      if (addMe) {
+        await db.query('INSERT INTO assignments (project_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [project.id, req.user.id]);
+      }
+      out.created += 1;
+    }
+    return out;
+  });
+  res.json(result);
+}));
+
+/* ---------- Activiteiten ---------- */
+
+r.get('/activities', ah(async (req, res) => {
+  const { rows } = await query(
+    `SELECT a.*, (SELECT count(*)::int FROM project_activities pa WHERE pa.activity_id = a.id) AS project_count
+       FROM activities a ORDER BY a.active DESC, a.name`
+  );
+  res.json(rows);
+}));
+
+function activityFields(b) {
+  return {
+    name: str(b.name, { name: 'Naam', max: 120 }),
+    description: str(b.description, { name: 'Omschrijving', max: 500, required: false }) || null,
+    default_rate: num(b.default_rate, { min: 0, max: 10000, name: 'tarief', allowNull: true }),
+  };
+}
+
+r.post('/activities', ah(async (req, res) => {
+  const f = activityFields(req.body);
+  try {
+    const { rows } = await query(
+      'INSERT INTO activities (name, description, default_rate) VALUES ($1, $2, $3) RETURNING *',
+      [f.name, f.description, f.default_rate]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') throw new HttpError(409, 'Er bestaat al een activiteit met deze naam');
+    throw err;
+  }
+}));
+
+r.patch('/activities/:id', ah(async (req, res) => {
+  const f = activityFields(req.body);
+  try {
+    const { rows } = await query(
+      `UPDATE activities SET name = $1, description = $2, default_rate = $3, active = $4 WHERE id = $5 RETURNING *`,
+      [f.name, f.description, f.default_rate, req.body.active !== false, intParam(req.params.id)]
+    );
+    if (!rows[0]) throw new HttpError(404, 'Activiteit niet gevonden');
+    res.json(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') throw new HttpError(409, 'Er bestaat al een activiteit met deze naam');
+    throw err;
+  }
+}));
+
+// Import van de activiteitenexport uit e-Boekhouden (Uren > Configuratie > Activiteiten).
+r.post('/activities/import', ah(async (req, res) => {
+  const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
+  if (!rows.length) throw new HttpError(400, 'Het bestand bevat geen activiteiten');
+  if (rows.length > 1000) throw new HttpError(400, 'Maximaal 1000 activiteiten per import');
+  const updateRates = req.body.update_rates !== false;
+  const out = await tx(async (db) => {
+    const byName = new Map((await db.query('SELECT id, name, default_rate FROM activities')).rows
+      .map((a) => [a.name.trim().toLowerCase(), a]));
+    const result = { created: 0, updated: 0, skipped: 0 };
+    for (const row of rows) {
+      const name = str(row.name, { name: 'Naam', max: 120 });
+      const rate = num(row.rate, { min: 0, max: 10000, name: 'tarief', allowNull: true });
+      const ex = byName.get(name.toLowerCase());
+      if (!ex) {
+        const a = (await db.query('INSERT INTO activities (name, default_rate) VALUES ($1, $2) RETURNING id, name, default_rate', [name, rate])).rows[0];
+        byName.set(name.toLowerCase(), a);
+        result.created += 1;
+      } else if (updateRates && rate !== ex.default_rate) {
+        await db.query('UPDATE activities SET default_rate = $1 WHERE id = $2', [rate, ex.id]);
+        ex.default_rate = rate;
+        result.updated += 1;
+      } else {
+        result.skipped += 1;
+      }
+    }
+    return result;
+  });
+  res.json(out);
+}));
+
+r.get('/projects/:id/activities', ah(async (req, res) => {
+  const { rows } = await query(
+    `SELECT a.id AS activity_id, a.name, a.default_rate, a.active, pa.rate, (pa.activity_id IS NOT NULL) AS linked
+       FROM activities a
+       LEFT JOIN project_activities pa ON pa.activity_id = a.id AND pa.project_id = $1
+      WHERE a.active OR pa.activity_id IS NOT NULL
+      ORDER BY a.name`,
+    [intParam(req.params.id)]
+  );
+  res.json(rows);
+}));
+
+r.put('/projects/:id/activities/:activityId', ah(async (req, res) => {
+  const rate = num(req.body.rate, { min: 0, max: 10000, name: 'tarief', allowNull: true });
+  await query(
+    `INSERT INTO project_activities (project_id, activity_id, rate) VALUES ($1, $2, $3)
+     ON CONFLICT (project_id, activity_id) DO UPDATE SET rate = EXCLUDED.rate`,
+    [intParam(req.params.id), intParam(req.params.activityId), rate]
+  );
+  res.json({ ok: true });
+}));
+
+r.delete('/projects/:id/activities/:activityId', ah(async (req, res) => {
+  await query('DELETE FROM project_activities WHERE project_id = $1 AND activity_id = $2', [
+    intParam(req.params.id), intParam(req.params.activityId),
+  ]);
+  res.json({ ok: true });
 }));
 
 r.get('/projects/:id/assignments', ah(async (req, res) => {
@@ -259,6 +433,55 @@ r.put('/settings', ah(async (req, res) => {
   };
   await setEbSettings(value);
   res.json(value);
+}));
+
+r.get('/eb/relations', ah(async (req, res) => {
+  const relations = await eb.relations({ fresh: req.query.fresh === '1' });
+  const clients = (await query('SELECT id, name, eb_relation_id FROM clients')).rows;
+  const byRelation = new Map(clients.filter((c) => c.eb_relation_id).map((c) => [c.eb_relation_id, c]));
+  const byName = new Map(clients.filter((c) => !c.eb_relation_id).map((c) => [normName(c.name), c]));
+  res.json(relations.map((rel) => {
+    const linked = byRelation.get(rel.id);
+    const sameName = !linked && byName.get(normName(rel.name));
+    return {
+      ...rel,
+      client_id: linked ? linked.id : null,
+      client_name: linked ? linked.name : null,
+      match_client_id: sameName ? sameName.id : null,
+    };
+  }));
+}));
+
+// Relaties uit e-Boekhouden overnemen als (gekoppelde) klanten.
+r.post('/clients/import-eb', ah(async (req, res) => {
+  const ids = Array.isArray(req.body.relation_ids) ? req.body.relation_ids.map((x) => intParam(x, 'relatie')) : [];
+  if (!ids.length) throw new HttpError(400, 'Selecteer een of meer relaties');
+  const relations = new Map((await eb.relations()).map((x) => [x.id, x]));
+  const out = await tx(async (db) => {
+    const clients = (await db.query('SELECT id, name, eb_relation_id FROM clients')).rows;
+    const linkedIds = new Set(clients.filter((c) => c.eb_relation_id).map((c) => c.eb_relation_id));
+    const byName = new Map(clients.filter((c) => !c.eb_relation_id).map((c) => [normName(c.name), c]));
+    const result = { created: 0, linked: 0, skipped: 0 };
+    for (const id of ids) {
+      const rel = relations.get(id);
+      if (!rel || linkedIds.has(id)) { result.skipped += 1; continue; }
+      const same = byName.get(normName(rel.name));
+      if (same) {
+        await db.query('UPDATE clients SET eb_relation_id = $1, eb_relation_code = $2 WHERE id = $3', [rel.id, rel.code, same.id]);
+        byName.delete(normName(rel.name));
+        result.linked += 1;
+      } else {
+        await db.query(
+          'INSERT INTO clients (name, eb_relation_id, eb_relation_code) VALUES ($1, $2, $3)',
+          [rel.name, rel.id, rel.code]
+        );
+        result.created += 1;
+      }
+      linkedIds.add(id);
+    }
+    return result;
+  });
+  res.json(out);
 }));
 
 r.post('/eb/test', ah(async (req, res) => {

@@ -386,7 +386,7 @@ code { font-size: 0.9em; background: var(--line-soft); padding: 0.05rem 0.3rem; 
 
 .list-add {
   display: grid;
-  grid-template-columns: minmax(10rem, 0.9fr) minmax(12rem, 1.3fr) 6rem minmax(12rem, 2fr) auto;
+  grid-template-columns: minmax(9rem, 0.8fr) minmax(11rem, 1.2fr) minmax(10rem, 1fr) 5.5rem minmax(11rem, 1.6fr) auto;
   gap: 0.75rem;
   align-items: end;
   padding: 1rem 1.1rem;
@@ -472,4 +472,19 @@ code { font-size: 0.9em; background: var(--line-soft); padding: 0.05rem 0.3rem; 
 .le-saved { font-size: 0.8rem; color: var(--approved); min-height: 1em; }
 @media (hover: none) {
   .list-entry.editable .le-desc-input, .list-entry.editable .le-hours-input { border-color: var(--line-soft); }
+}
+
+dialog.wide { width: min(880px, calc(100vw - 2rem)); }
+.import-preview { max-height: 46vh; overflow: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-s); }
+.import-preview thead th { position: sticky; top: 0; }
+input[type="file"] { padding: 0.35rem; }
+
+/* Activiteiten in urenstaat */
+table.grid .proj .act { display: block; font-size: 0.85rem; color: var(--accent); font-weight: 500; }
+.le-act { display: block; font-size: 0.85rem; color: var(--accent); font-weight: 500; }
+.add-row-bar { margin-top: 0.75rem; }
+td.empty-row { padding: 1.5rem 1rem; text-align: center; color: var(--muted); }
+@media (min-width: 901px) and (max-width: 1100px) {
+  .list-add { grid-template-columns: 1fr 1fr 1fr; }
+  .list-add .grow, .list-add button { grid-column: 1 / -1; }
 }

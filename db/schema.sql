@@ -46,6 +46,23 @@ CREATE TABLE IF NOT EXISTS assignments (
   PRIMARY KEY (project_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS activities (
+  id           SERIAL PRIMARY KEY,
+  name         TEXT NOT NULL,
+  description  TEXT,
+  default_rate NUMERIC(10,2),                 -- NULL = tarief van medewerker/project
+  active       BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS activities_name_idx ON activities (lower(name));
+
+CREATE TABLE IF NOT EXISTS project_activities (
+  project_id  INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  activity_id INT NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+  rate        NUMERIC(10,2),                  -- afwijkend tarief op dit project
+  PRIMARY KEY (project_id, activity_id)
+);
+
 CREATE TABLE IF NOT EXISTS invoices (
   id                SERIAL PRIMARY KEY,
   client_id         INT NOT NULL REFERENCES clients(id),
@@ -64,6 +81,7 @@ CREATE TABLE IF NOT EXISTS time_entries (
   id               SERIAL PRIMARY KEY,
   user_id          INT NOT NULL REFERENCES users(id),
   project_id       INT NOT NULL REFERENCES projects(id),
+  activity_id      INT REFERENCES activities(id),
   work_date        DATE NOT NULL,
   hours            NUMERIC(5,2) NOT NULL CHECK (hours > 0 AND hours <= 24),
   description      TEXT NOT NULL DEFAULT '',
@@ -75,9 +93,13 @@ CREATE TABLE IF NOT EXISTS time_entries (
   approved_at      TIMESTAMPTZ,
   invoice_id       INT REFERENCES invoices(id),
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (user_id, project_id, work_date)
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Bestaande installaties: kolom toevoegen en uniciteit uitbreiden met de activiteit.
+ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS activity_id INT REFERENCES activities(id);
+ALTER TABLE time_entries DROP CONSTRAINT IF EXISTS time_entries_user_id_project_id_work_date_key;
+CREATE UNIQUE INDEX IF NOT EXISTS time_entries_cell_idx
+  ON time_entries (user_id, project_id, (COALESCE(activity_id, 0)), work_date);
 CREATE INDEX IF NOT EXISTS time_entries_status_idx ON time_entries(status);
 CREATE INDEX IF NOT EXISTS time_entries_date_idx ON time_entries(work_date);
 CREATE INDEX IF NOT EXISTS time_entries_project_idx ON time_entries(project_id);

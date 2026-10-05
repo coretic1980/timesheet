@@ -24,6 +24,17 @@ Stack: Node 20 + Express, Postgres (Neon) en een frontend zonder build-stap. De 
   - budgetverbruik per project
   - omzet uit goedgekeurde uren
   - CSV-export (puntkomma, decimale komma)
+- **Projecten importeren** uit de export van e-Boekhouden (Uren › Configuratie › Projecten), of uit een eigen Excel- of CSV-bestand met de kolommen Project en Relatie. Ontbrekende klanten worden aangemaakt, projecten van je eigen bedrijf worden intern, en projecten die al bestaan worden overgeslagen. Tarieven staan niet in de export; projecten zonder tarief krijgen het label "Tarief ontbreekt".
+- **Activiteiten:** activiteiten beheer je centraal met een standaardtarief, en per project kies je welke activiteiten erbij horen, eventueel met een afwijkend tarief. Medewerkers schrijven uren op project + activiteit. In het raster is elke combinatie een eigen regel; de combinaties van vorige week komen automatisch terug, en nieuwe voeg je toe met "Regel toevoegen". De activiteit komt op de factuurregel.
+- **Tariefvolgorde** bij goedkeuring:
+  1. afwijkend tarief van de activiteit op het project
+  2. tarief van de medewerker op het project
+  3. standaardtarief van de activiteit
+  4. projecttarief
+- **Importeren uit e-Boekhouden:**
+  - activiteiten uit de export van Uren › Configuratie › Activiteiten (naam + uurtarief)
+  - klanten rechtstreeks via de API (Beheer › Klanten › Ophalen uit e-Boekhouden), direct gekoppeld
+  - bij de projectimport worden nieuwe klanten op naam opgezocht in e-Boekhouden en meteen gekoppeld
 - **Koppeling:** klanten koppel je aan een bestaande relatie (via de relatiecode), of je maakt de relatie vanuit de app aan in e-Boekhouden.
 
 ## Installatie

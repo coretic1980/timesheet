@@ -2,7 +2,7 @@
   'use strict';
 
   const app = document.getElementById('app');
-  const state = { user: null, pendingCount: 0, sheet: null, invoicePeriod: null, reportPeriod: null };
+  const state = { user: null, pendingCount: 0, sheet: null, extraRows: {}, invoicePeriod: null, reportPeriod: null };
 
   /* ================= Hulpfuncties ================= */
 
@@ -93,8 +93,9 @@
     setTimeout(() => el.remove(), isError ? 6000 : 3500);
   }
 
-  function openDialog({ title, body, submit = 'Opslaan', danger = false, onSubmit, onOpen }) {
+  function openDialog({ title, body, submit = 'Opslaan', danger = false, wide = false, onSubmit, onOpen }) {
     const dlg = document.createElement('dialog');
+    if (wide) dlg.classList.add('wide');
     dlg.innerHTML = `
       <form novalidate>
         <h2>${esc(title)}</h2>
@@ -279,10 +280,72 @@
     try { localStorage.setItem(MODE_KEY, mode); } catch { /* geen opslag beschikbaar */ }
   }
 
+  // Sleutels. Rij = project|activiteit, vak = project|activiteit|datum. Activiteit 0 = geen activiteit.
+  const rowKey = (pid, aid) => `${pid}|${aid || 0}`;
+  const cellKey = (pid, aid, date) => `${pid}|${aid || 0}|${date}`;
+  const entryKey = (e) => cellKey(e.project_id, e.activity_id, e.work_date);
+  const parseKey = (k) => {
+    const [pid, aid, date] = k.split('|');
+    return { pid: Number(pid), aid: Number(aid) || 0, date };
+  };
+
+  const projectOf = (pid) => state.sheet.projects.find((p) => p.id === pid);
+  const activityOf = (p, aid) => (aid && p ? (p.activities || []).find((a) => a.id === aid) : null);
+  const activeActivities = (p) => (p.activities || []).filter((a) => a.active);
+  function rowLabel(pid, aid) {
+    const p = projectOf(pid);
+    const a = activityOf(p, aid);
+    return `${p ? p.name : 'Project'}${a ? `, ${a.name}` : ''}`;
+  }
+
+  // Welke rijen staan in de urenstaat: alles met uren deze week, de combinaties van vorige week,
+  // zelf toegevoegde regels, en projecten zonder activiteiten.
+  function sheetRows(data) {
+    const rows = [];
+    const seen = new Set();
+    const add = (pid, aid) => {
+      const k = rowKey(pid, aid);
+      if (seen.has(k)) return;
+      const p = data.projects.find((x) => x.id === pid);
+      if (!p) return;
+      const a = activityOf(p, aid);
+      if (aid && !a) return;
+      seen.add(k);
+      rows.push({ key: k, pid, aid: aid || 0, project: p, activity: a });
+    };
+    for (const e of data.map.values()) add(e.project_id, e.activity_id);
+    for (const r of data.recent || []) {
+      const p = data.projects.find((x) => x.id === r.project_id);
+      if (!p || !p.active) continue;
+      const a = activityOf(p, r.activity_id);
+      if (r.activity_id ? (a && a.active) : !activeActivities(p).length) add(r.project_id, r.activity_id);
+    }
+    for (const k of state.extraRows[data.week_start] || []) { const { pid, aid } = parseKey(k); add(pid, aid); }
+    for (const p of data.projects) if (p.active && !activeActivities(p).length) add(p.id, 0);
+    const label = (r) => `${r.project.client_name || ''}|${r.project.name}|${r.activity ? r.activity.name : ''}`;
+    rows.sort((x, y) => (Number(!x.project.client_name) - Number(!y.project.client_name)) || label(x).localeCompare(label(y), 'nl'));
+    return rows;
+  }
+
+  // Combinaties die je nog kunt toevoegen.
+  function addableRows(data) {
+    const shown = new Set(sheetRows(data).map((r) => r.key));
+    const out = [];
+    for (const p of data.projects.filter((x) => x.active)) {
+      const acts = activeActivities(p);
+      if (acts.length) {
+        for (const a of acts) if (!shown.has(rowKey(p.id, a.id))) out.push({ pid: p.id, aid: a.id, project: p, activity: a });
+      } else if (!shown.has(rowKey(p.id, 0))) {
+        out.push({ pid: p.id, aid: 0, project: p, activity: null });
+      }
+    }
+    return out;
+  }
+
   async function viewTimesheet(view, params) {
     const requested = /^\d{4}-\d{2}-\d{2}$/.test(params[0] || '') ? params[0] : todayIso();
     const data = await api(`/timesheet?week=${weekStart(requested)}`);
-    data.map = new Map(data.entries.map((e) => [`${e.project_id}|${e.work_date}`, e]));
+    data.map = new Map(data.entries.map((e) => [entryKey(e), e]));
     state.sheet = data;
 
     view.innerHTML = '<div id="sheet-head"></div><div id="sheet-notices"></div><div id="sheet-body"></div>';
@@ -304,14 +367,26 @@
     view.addEventListener('change', (e) => {
       if (e.target.matches('input.hrs')) saveCell(view, e.target);
       if (e.target.matches('.list-entry [data-field]')) saveListRow(view, e.target.closest('li'));
+      if (e.target.matches('#list-add select[name="project"]')) fillActivitySelect(e.target.form);
     });
     view.addEventListener('input', (e) => {
       if (e.target.matches('.le-desc-input')) autoGrow(e.target);
     });
     view.addEventListener('keydown', (e) => {
+      if (e.target.matches('input.hrs') && e.key === 'Enter') {
+        e.preventDefault();
+        const date = e.target.dataset.date;
+        let tr = e.target.closest('tr').nextElementSibling;
+        while (tr) {
+          const next = tr.querySelector(`input.hrs[data-date="${date}"]:not(:disabled)`);
+          if (next) { next.focus(); next.select(); return; }
+          tr = tr.nextElementSibling;
+        }
+        e.target.blur();
+        return;
+      }
       if (!e.target.matches('.list-entry [data-field]')) return;
       if (e.key === 'Escape') {
-        // Terug naar de opgeslagen waarde
         const entry = state.sheet.map.get(e.target.closest('li').dataset.key);
         if (entry) {
           e.target.value = e.target.dataset.field === 'hours' ? fmtInput(entry.hours) : entry.description;
@@ -320,20 +395,8 @@
         e.target.blur();
       } else if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        e.target.blur(); // blur triggert 'change' en dus opslaan
+        e.target.blur();
       }
-    });
-    view.addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter' || !e.target.matches('input.hrs')) return;
-      e.preventDefault();
-      const date = e.target.dataset.date;
-      let tr = e.target.closest('tr').nextElementSibling;
-      while (tr) {
-        const next = tr.querySelector(`input.hrs[data-date="${date}"]:not(:disabled)`);
-        if (next) { next.focus(); next.select(); return; }
-        tr = tr.nextElementSibling;
-      }
-      e.target.blur();
     });
     view.addEventListener('pointerdown', (e) => {
       const grip = e.target.closest('.grip');
@@ -346,7 +409,7 @@
     });
     view.addEventListener('click', (e) => {
       const note = e.target.closest('button.note');
-      if (note) openNote(view, Number(note.closest('tr').dataset.project), note.dataset.date);
+      if (note) openNote(view, note.closest('tr').dataset.row, note.dataset.date);
       const act = e.target.closest('[data-sheet-action]');
       if (act) sheetAction(view, act.dataset.sheetAction);
       const mode = e.target.closest('[data-sheet-mode]');
@@ -354,6 +417,7 @@
         setSheetMode(mode.dataset.sheetMode);
         renderSheetBody(view);
       }
+      if (e.target.closest('[data-add-row]')) openAddRow(view);
       const edit = e.target.closest('[data-list-edit]');
       if (edit) editListEntry(view, edit.closest('li').dataset.key);
       const del = e.target.closest('[data-list-delete]');
@@ -377,56 +441,92 @@
 
   function gridHTML(data) {
     const today = todayIso();
+    const rows = sheetRows(data);
     const head = data.days.map((d, i) => {
       const cls = [i >= 5 ? 'weekend' : '', d === today ? 'today' : ''].join(' ').trim();
       return `<th class="${cls}" scope="col"><span>${DAYS[i]}</span><span class="dnum">${Number(d.slice(8))}</span></th>`;
     }).join('');
 
-    const rows = data.projects.map((p) => {
+    const body = rows.map((r) => {
+      const p = r.project;
+      const rowLocked = !p.active || (r.activity && !r.activity.active);
       const cells = data.days.map((d, i) => {
-        const e = data.map.get(`${p.id}|${d}`);
-        const locked = (e && !EDITABLE.includes(e.status)) || !p.active;
+        const e = data.map.get(cellKey(r.pid, r.aid, d));
+        const locked = (e && !EDITABLE.includes(e.status)) || rowLocked;
+        const label = rowLabel(r.pid, r.aid);
         return `
           <td class="cell${i >= 5 ? ' weekend' : ''}${e ? ` s-${e.status}` : ''}" data-date="${d}">
             <input class="hrs" inputmode="decimal" autocomplete="off" data-date="${d}"
-              aria-label="${esc(p.name)}, ${DAYS_LONG[i]} ${fmtDate(d)}"
+              aria-label="${esc(label)}, ${DAYS_LONG[i]} ${fmtDate(d)}"
               value="${fmtInput(e && e.hours)}"${locked ? ' disabled' : ''}>
             <button type="button" class="note${e && e.description ? ' has' : ''}" data-date="${d}"
-              aria-label="Omschrijving bij ${esc(p.name)}, ${DAYS_LONG[i]}"
+              aria-label="Omschrijving bij ${esc(label)}, ${DAYS_LONG[i]}"
               title="${esc((e && e.description) || 'Omschrijving toevoegen')}"></button>
             <span class="grip" aria-hidden="true" title="Sleep naar een andere dag (Ctrl of ⌥ om te kopiëren)"></span>
           </td>`;
       }).join('');
       return `
-        <tr data-project="${p.id}">
+        <tr data-row="${r.key}">
           <th class="proj" scope="row">
             <span class="client">${esc(p.client_name || 'Intern')}</span>
             <span class="name">${esc(p.name)}</span>
+            ${r.activity ? `<span class="act">${esc(r.activity.name)}</span>` : ''}
             ${p.billable ? '' : '<span class="tag">Niet declarabel</span>'}
           </th>
           ${cells}
           <td class="rowtotal" data-rowtotal></td>
         </tr>`;
-    }).join('');
+    }).join('') || `<tr><td class="empty-row" colspan="9">Voeg een regel toe om uren te schrijven.</td></tr>`;
 
     const foot = data.days.map((d, i) => `<td class="coltotal${i >= 5 ? ' weekend' : ''}" data-coltotal="${d}"></td>`).join('');
+    const canAdd = addableRows(data).length > 0;
 
     return `
       <div class="grid-wrap">
         <table class="grid">
           <thead><tr><th class="proj" scope="col">Project</th>${head}<th class="rowtotal" scope="col">Totaal</th></tr></thead>
-          <tbody>${rows}</tbody>
+          <tbody>${body}</tbody>
           <tfoot><tr><td class="proj muted">Per dag</td>${foot}<td class="rowtotal" data-weektotal></td></tr></tfoot>
         </table>
       </div>
+      ${canAdd ? '<div class="add-row-bar"><button class="btn" type="button" data-add-row>Regel toevoegen</button></div>' : ''}
       <div class="legend">${LEGEND}
-        <span>Tip: 7:30 wordt 7,5 uur. Enter springt naar het volgende project. Sleep een vak aan ⠿ naar een andere dag; met Ctrl of ⌥ kopieer je.</span>
+        <span>Tip: 7:30 wordt 7,5 uur. Enter springt naar de volgende regel. Sleep een vak aan ⠿ naar een andere dag; met Ctrl of ⌥ kopieer je.</span>
       </div>`;
+  }
+
+  function openAddRow(view) {
+    const options = addableRows(state.sheet);
+    if (!options.length) { toast('Alle projecten en activiteiten staan al in je urenstaat'); return; }
+    const groups = new Map();
+    for (const o of options) {
+      if (!groups.has(o.pid)) groups.set(o.pid, []);
+      groups.get(o.pid).push(o);
+    }
+    const opts = [...groups.values()].map((g) => {
+      const p = g[0].project;
+      const label = `${p.client_name || 'Intern'} / ${p.name}`;
+      if (!g[0].aid) return opt(rowKey(p.id, 0), label, false);
+      return `<optgroup label="${esc(label)}">${g.map((o) => opt(rowKey(o.pid, o.aid), o.activity.name, false)).join('')}</optgroup>`;
+    }).join('');
+    openDialog({
+      title: 'Regel toevoegen',
+      submit: 'Toevoegen',
+      body: `<label class="field">Project en activiteit<select name="row">${opts}</select></label>
+             <p class="muted small">De regel blijft staan zolang je er deze of vorige week uren op hebt.</p>`,
+      onSubmit: (fd) => {
+        const k = fd.get('row');
+        if (!state.extraRows[state.sheet.week_start]) state.extraRows[state.sheet.week_start] = [];
+        state.extraRows[state.sheet.week_start].push(k);
+        renderSheetBody(view);
+        const first = view.querySelector(`tr[data-row="${k}"] input.hrs:not(:disabled)`);
+        if (first) first.focus();
+      },
+    });
   }
 
   /* ---------- Lijstweergave ---------- */
 
-  const projectLabel = (p) => `${p.client_name || 'Intern'} / ${p.name}`;
   const dayLabel = (d) => `${DAYS_LONG[dow(d)]} ${fmtDate(d)}`;
 
   function dayOptions(data, selected) {
@@ -434,7 +534,17 @@
   }
   function projectOptions(data, selected) {
     return data.projects.filter((p) => p.active || p.id === selected)
-      .map((p) => opt(p.id, projectLabel(p), p.id === selected)).join('');
+      .map((p) => opt(p.id, `${p.client_name || 'Intern'} / ${p.name}`, p.id === selected)).join('');
+  }
+  function activityOptions(p, selected) {
+    const acts = p ? activeActivities(p) : [];
+    if (!acts.length) return opt('', 'Geen activiteiten', true);
+    return acts.map((a) => opt(a.id, a.name, a.id === selected)).join('');
+  }
+  function fillActivitySelect(form, selected) {
+    const p = projectOf(Number(form.project.value));
+    form.activity.innerHTML = activityOptions(p, selected);
+    form.activity.disabled = !(p && activeActivities(p).length);
   }
 
   function listHTML(data) {
@@ -443,20 +553,21 @@
     const defDay = data.days.includes(draft.date) ? draft.date : (data.days.includes(today) ? today : data.days[0]);
     const defProject = data.projects.some((p) => p.id === draft.project && p.active)
       ? draft.project : (data.projects.find((p) => p.active) || {}).id;
-    const canAdd = data.projects.some((p) => p.active);
+    const defProj = data.projects.find((p) => p.id === defProject);
+    const canAdd = Boolean(defProj);
 
     const form = canAdd ? `
       <form class="panel list-add" id="list-add" autocomplete="off">
         <label class="field">Dag<select name="date">${dayOptions(data, defDay)}</select></label>
         <label class="field">Project<select name="project">${projectOptions(data, defProject)}</select></label>
+        <label class="field">Activiteit<select name="activity"${activeActivities(defProj).length ? '' : ' disabled'}>${activityOptions(defProj, draft.activity)}</select></label>
         <label class="field">Uren<input name="hours" inputmode="decimal" placeholder="7,5" required></label>
         <label class="field grow">Omschrijving<input name="description" maxlength="1000" placeholder="Wat heb je gedaan?"></label>
         <button class="btn primary" type="submit">Toevoegen</button>
       </form>` : '';
 
-    const projById = new Map(data.projects.map((p) => [p.id, p]));
     const entries = [...data.map.values()].sort((x, y) => x.work_date.localeCompare(y.work_date)
-      || projectLabel(projById.get(x.project_id)).localeCompare(projectLabel(projById.get(y.project_id))));
+      || rowLabel(x.project_id, x.activity_id).localeCompare(rowLabel(y.project_id, y.activity_id), 'nl'));
 
     if (!entries.length) {
       return `${form}<div class="panel empty"><h2>Nog geen uren deze week</h2><p>Vul hierboven je eerste regel in.</p></div>`;
@@ -466,22 +577,23 @@
       const list = entries.filter((e) => e.work_date === d);
       const total = list.reduce((s, e) => s + e.hours, 0);
       const items = list.map((e) => {
-        const p = projById.get(e.project_id);
-        const editable = EDITABLE.includes(e.status) && p.active;
+        const p = projectOf(e.project_id);
+        const a = activityOf(p, e.activity_id);
+        const editable = EDITABLE.includes(e.status) && p.active && (!a || a.active);
         return `
-          <li class="list-entry s-${e.status}${editable ? ' editable' : ''}" data-key="${e.project_id}|${e.work_date}">
+          <li class="list-entry s-${e.status}${editable ? ' editable' : ''}" data-key="${entryKey(e)}">
             <div class="le-main">
               <span class="client">${esc(p.client_name || 'Intern')}${p.billable ? '' : ', niet declarabel'}</span>
-              <span class="name">${esc(p.name)}</span>
+              <span class="name">${esc(p.name)}</span>${a ? `<span class="le-act">${esc(a.name)}</span>` : ''}
               ${editable
                 ? `<textarea class="le-desc-input" data-field="description" rows="1" maxlength="1000"
-                     placeholder="Wat heb je gedaan?" aria-label="Omschrijving ${esc(p.name)}, ${dayLabel(e.work_date)}">${esc(e.description)}</textarea>`
+                     placeholder="Wat heb je gedaan?" aria-label="Omschrijving ${esc(rowLabel(e.project_id, e.activity_id))}, ${dayLabel(e.work_date)}">${esc(e.description)}</textarea>`
                 : `<p class="le-desc">${e.description ? esc(e.description) : '<span class="muted">Geen omschrijving</span>'}</p>`}
               ${e.status === 'rejected' && e.rejection_reason ? `<p class="le-reject">Afgekeurd: ${esc(e.rejection_reason)}</p>` : ''}
             </div>
             <div class="le-hours">${editable
               ? `<input class="le-hours-input" data-field="hours" inputmode="decimal" autocomplete="off"
-                   value="${fmtInput(e.hours)}" aria-label="Uren ${esc(p.name)}, ${dayLabel(e.work_date)}">`
+                   value="${fmtInput(e.hours)}" aria-label="Uren ${esc(rowLabel(e.project_id, e.activity_id))}, ${dayLabel(e.work_date)}">`
               : fh(e.hours)}<span> uur</span></div>
             <div class="le-status">${statusBadge(e.status)}<span class="le-saved" aria-live="polite"></span></div>
             <div class="le-actions">${editable ? `
@@ -500,28 +612,43 @@
     return `${form}${days}`;
   }
 
+  // Zet uren op een vak; staat er al iets, dan tellen we op en voegen we de omschrijvingen samen.
+  async function addToCell(pid, aid, date, hours, description) {
+    const key = cellKey(pid, aid, date);
+    const existing = state.sheet.map.get(key);
+    if (existing && !EDITABLE.includes(existing.status)) {
+      throw new Error('Daar staan al ingediende of goedgekeurde uren');
+    }
+    const total = Math.round(((existing ? existing.hours : 0) + hours) * 100) / 100;
+    if (total > 24) throw new Error('Samen wordt dat meer dan 24 uur');
+    const desc = [...new Set([existing && existing.description, description].filter(Boolean))].join('; ');
+    const res = await api('/timesheet/entry', {
+      method: 'PUT', body: { project_id: pid, activity_id: aid || null, work_date: date, hours: total, description: desc },
+    });
+    state.sheet.map.set(key, res);
+    return { res, existing };
+  }
+
+  async function clearCell(pid, aid, date) {
+    await api('/timesheet/entry', {
+      method: 'PUT', body: { project_id: pid, activity_id: aid || null, work_date: date, hours: 0, description: '' },
+    });
+    state.sheet.map.delete(cellKey(pid, aid, date));
+  }
+
   async function addListEntry(view, form) {
     const pid = Number(form.project.value);
+    const aid = Number(form.activity.value) || 0;
     const date = form.date.value;
     const hours = parseHours(form.hours.value);
-    state.listDraft = { date, project: pid };
+    state.listDraft = { date, project: pid, activity: aid };
     if (!hours || Number.isNaN(hours) || hours < 0 || hours > 24) {
       toast('Vul een aantal uren in tussen 0 en 24, bijvoorbeeld 7,5 of 7:30', true);
       form.hours.focus();
       return;
     }
-    const key = `${pid}|${date}`;
-    const existing = state.sheet.map.get(key);
-    if (existing && !EDITABLE.includes(existing.status)) {
-      toast('Op deze dag en dit project staan al ingediende of goedgekeurde uren', true);
-      return;
-    }
-    const total = Math.round(((existing ? existing.hours : 0) + hours) * 100) / 100;
-    if (total > 24) { toast('Samen wordt dat meer dan 24 uur', true); return; }
-    const description = [...new Set([existing && existing.description, form.description.value.trim()].filter(Boolean))].join('; ');
     try {
-      const res = await api('/timesheet/entry', { method: 'PUT', body: { project_id: pid, work_date: date, hours: total, description } });
-      state.sheet.map.set(key, res);
+      const { existing } = await addToCell(pid, aid, date, hours, form.description.value.trim());
       renderSheetBody(view);
       toast(existing ? `Opgeteld bij de ${fh(existing.hours)} uur die er al stond` : `${fh(hours)} uur toegevoegd`);
       const again = view.querySelector('#list-add input[name="hours"]');
@@ -564,7 +691,7 @@
     try {
       const res = await api('/timesheet/entry', {
         method: 'PUT',
-        body: { project_id: entry.project_id, work_date: entry.work_date, hours, description },
+        body: { project_id: entry.project_id, activity_id: entry.activity_id || null, work_date: entry.work_date, hours, description },
       });
       state.sheet.map.set(key, res);
       hoursEl.value = fmtInput(res.hours);
@@ -594,36 +721,31 @@
   function editListEntry(view, key) {
     const entry = state.sheet.map.get(key);
     if (!entry) return;
-    const p = state.sheet.projects.find((x) => x.id === entry.project_id);
     openDialog({
       title: 'Regel verplaatsen',
       submit: 'Verplaatsen',
       body: `
-        <p class="muted small">${fh(entry.hours)} uur op ${esc(p.name)}, ${dayLabel(entry.work_date)}</p>
+        <p class="muted small">${fh(entry.hours)} uur op ${esc(rowLabel(entry.project_id, entry.activity_id))}, ${dayLabel(entry.work_date)}</p>
         <div class="form-grid">
           <label class="field">Naar dag<select name="date">${dayOptions(state.sheet, entry.work_date)}</select></label>
           <label class="field">Naar project<select name="project">${projectOptions(state.sheet, entry.project_id)}</select></label>
+          <label class="field">Activiteit<select name="activity"></select></label>
         </div>
         <p class="muted small">Staat daar al iets, dan worden de uren opgeteld.</p>`,
+      onOpen: (form) => {
+        fillActivitySelect(form, entry.activity_id);
+        form.project.addEventListener('change', () => fillActivitySelect(form));
+      },
       onSubmit: async (fd) => {
         const pid = Number(fd.get('project'));
+        const aid = Number(fd.get('activity')) || 0;
         const date = fd.get('date');
-        const { hours, description } = entry;
-        const newKey = `${pid}|${date}`;
-        if (newKey === key) return;
-        {
-          // Naar een andere dag of project: daar optellen, hier weghalen.
-          const target = state.sheet.map.get(newKey);
-          if (target && !EDITABLE.includes(target.status)) throw new Error('Op die dag en dat project staan al ingediende of goedgekeurde uren');
-          const total = Math.round(((target ? target.hours : 0) + hours) * 100) / 100;
-          if (total > 24) throw new Error('Samen wordt dat meer dan 24 uur');
-          const desc = [...new Set([target && target.description, description].filter(Boolean))].join('; ');
-          const res = await api('/timesheet/entry', { method: 'PUT', body: { project_id: pid, work_date: date, hours: total, description: desc } });
-          if (res.deleted) state.sheet.map.delete(newKey); else state.sheet.map.set(newKey, res);
-          await api('/timesheet/entry', { method: 'PUT', body: { project_id: entry.project_id, work_date: entry.work_date, hours: 0, description: '' } });
-          state.sheet.map.delete(key);
-          if (target) toast(`Opgeteld bij de ${fh(target.hours)} uur die er al stond`);
-        }
+        const p = projectOf(pid);
+        if (!aid && p && activeActivities(p).length) throw new Error('Kies een activiteit');
+        if (cellKey(pid, aid, date) === key) return;
+        const { existing } = await addToCell(pid, aid, date, entry.hours, entry.description);
+        await clearCell(entry.project_id, entry.activity_id, entry.work_date);
+        if (existing) toast(`Opgeteld bij de ${fh(existing.hours)} uur die er al stond`);
         renderSheetBody(view);
       },
     });
@@ -632,18 +754,18 @@
   async function deleteListEntry(view, key) {
     const entry = state.sheet.map.get(key);
     if (!entry) return;
-    const p = state.sheet.projects.find((x) => x.id === entry.project_id);
-    const ok = await confirmDialog('Regel verwijderen', `${fh(entry.hours)} uur op ${esc(p.name)}, ${dayLabel(entry.work_date)} verwijderen?`, 'Verwijderen', true);
+    const ok = await confirmDialog('Regel verwijderen', `${fh(entry.hours)} uur op ${esc(rowLabel(entry.project_id, entry.activity_id))}, ${dayLabel(entry.work_date)} verwijderen?`, 'Verwijderen', true);
     if (!ok) return;
     try {
-      await api('/timesheet/entry', { method: 'PUT', body: { project_id: entry.project_id, work_date: entry.work_date, hours: 0, description: '' } });
-      state.sheet.map.delete(key);
+      await clearCell(entry.project_id, entry.activity_id, entry.work_date);
       renderSheetBody(view);
       toast('Regel verwijderd');
     } catch (e) {
       toast(e.message, true);
     }
   }
+
+  /* ---------- Kop, totalen en raster-acties ---------- */
 
   function weekNavHTML(data, prev, next) {
     const entries = data.map ? [...data.map.values()] : [];
@@ -680,9 +802,7 @@
 
   function refreshSheetChrome(view) {
     const data = state.sheet;
-    const prev = addDays(data.week_start, -7);
-    const next = addDays(data.week_start, 7);
-    view.querySelector('#sheet-head').innerHTML = weekNavHTML(data, prev, next);
+    view.querySelector('#sheet-head').innerHTML = weekNavHTML(data, addDays(data.week_start, -7), addDays(data.week_start, 7));
 
     const rejected = [...data.map.values()].filter((e) => e.status === 'rejected');
     view.querySelector('#sheet-notices').innerHTML = rejected.length
@@ -695,9 +815,9 @@
 
     if (!view.querySelector('table.grid')) return;
     let week = 0;
-    for (const tr of view.querySelectorAll('tbody tr[data-project]')) {
-      const pid = Number(tr.dataset.project);
-      const sum = data.days.reduce((s, d) => s + ((data.map.get(`${pid}|${d}`) || {}).hours || 0), 0);
+    for (const tr of view.querySelectorAll('tbody tr[data-row]')) {
+      const { pid, aid } = parseKey(tr.dataset.row);
+      const sum = data.days.reduce((s, d) => s + ((data.map.get(cellKey(pid, aid, d)) || {}).hours || 0), 0);
       tr.querySelector('[data-rowtotal]').textContent = sum ? fh(sum) : '';
       week += sum;
     }
@@ -719,9 +839,10 @@
   }
 
   async function saveCell(view, input) {
-    const pid = Number(input.closest('tr').dataset.project);
+    const rk = input.closest('tr').dataset.row;
+    const { pid, aid } = parseKey(rk);
     const date = input.dataset.date;
-    const key = `${pid}|${date}`;
+    const key = cellKey(pid, aid, date);
     const existing = state.sheet.map.get(key);
     const hours = parseHours(input.value);
     if (Number.isNaN(hours) || hours < 0 || hours > 24) {
@@ -738,7 +859,7 @@
     try {
       const res = await api('/timesheet/entry', {
         method: 'PUT',
-        body: { project_id: pid, work_date: date, hours, description: existing ? existing.description : '' },
+        body: { project_id: pid, activity_id: aid || null, work_date: date, hours, description: existing ? existing.description : '' },
       });
       if (res.deleted) state.sheet.map.delete(key);
       else state.sheet.map.set(key, res);
@@ -755,12 +876,12 @@
 
   /* Slepen: verplaatsen of (met Ctrl/Alt/⌘) kopiëren naar een ander vak */
 
-  function cellAt(view, pid, date) {
-    return view.querySelector(`tr[data-project="${pid}"] td[data-date="${date}"]`);
+  function cellAt(view, rk, date) {
+    return view.querySelector(`tr[data-row="${rk}"] td[data-date="${date}"]`);
   }
 
-  function updateCellUI(view, pid, date, entry) {
-    const td = cellAt(view, pid, date);
+  function updateCellUI(view, rk, date, entry) {
+    const td = cellAt(view, rk, date);
     if (!td) return;
     td.querySelector('input.hrs').value = fmtInput(entry && entry.hours);
     paintCell(td, entry);
@@ -769,9 +890,10 @@
   function startDrag(view, grip, ev) {
     const td = grip.closest('td.cell');
     if (td.querySelector('input.hrs').disabled) return;
-    const pid = Number(td.closest('tr').dataset.project);
+    const rk = td.closest('tr').dataset.row;
+    const { pid, aid } = parseKey(rk);
     const date = td.dataset.date;
-    const entry = state.sheet.map.get(`${pid}|${date}`);
+    const entry = state.sheet.map.get(cellKey(pid, aid, date));
     if (!entry || !EDITABLE.includes(entry.status)) return;
     ev.preventDefault();
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
@@ -808,9 +930,7 @@
     const finish = (e) => {
       const dropOn = target;
       cleanup();
-      if (dropOn) {
-        dropEntry(view, pid, date, Number(dropOn.closest('tr').dataset.project), dropOn.dataset.date, isCopy(e));
-      }
+      if (dropOn) dropEntry(view, rk, date, dropOn.closest('tr').dataset.row, dropOn.dataset.date, isCopy(e));
     };
     const onKey = (e) => {
       if (e.key === 'Escape') { target = null; cleanup(); }
@@ -823,57 +943,39 @@
     move(ev);
   }
 
-  async function dropEntry(view, fromPid, fromDate, toPid, toDate, copy) {
-    const src = state.sheet.map.get(`${fromPid}|${fromDate}`);
+  async function dropEntry(view, fromRk, fromDate, toRk, toDate, copy) {
+    const from = parseKey(fromRk);
+    const to = parseKey(toRk);
+    const src = state.sheet.map.get(cellKey(from.pid, from.aid, fromDate));
     if (!src) return;
-    const dstKey = `${toPid}|${toDate}`;
-    const dst = state.sheet.map.get(dstKey);
-    if (dst && !EDITABLE.includes(dst.status)) {
-      toast('Dat vak is al ingediend of goedgekeurd en kan niet meer veranderen', true);
-      return;
-    }
-    // Staat er al iets, dan tellen we op in plaats van te overschrijven.
-    const hours = Math.round(((dst ? dst.hours : 0) + src.hours) * 100) / 100;
-    if (hours > 24) {
-      toast('Samen wordt dat meer dan 24 uur in één vak', true);
-      return;
-    }
-    const description = [...new Set([dst && dst.description, src.description].filter(Boolean))].join('; ');
-    const where = `${DAYS_LONG[dow(toDate)]} ${fmtDate(toDate)}`;
     try {
-      const res = await api('/timesheet/entry', {
-        method: 'PUT', body: { project_id: toPid, work_date: toDate, hours, description },
-      });
-      state.sheet.map.set(dstKey, res);
-      updateCellUI(view, toPid, toDate, res);
+      const { res, existing } = await addToCell(to.pid, to.aid, toDate, src.hours, src.description);
+      updateCellUI(view, toRk, toDate, res);
       if (!copy) {
-        await api('/timesheet/entry', {
-          method: 'PUT', body: { project_id: fromPid, work_date: fromDate, hours: 0, description: '' },
-        });
-        state.sheet.map.delete(`${fromPid}|${fromDate}`);
-        updateCellUI(view, fromPid, fromDate, null);
+        await clearCell(from.pid, from.aid, fromDate);
+        updateCellUI(view, fromRk, fromDate, null);
       }
       refreshSheetChrome(view);
-      toast(`${fh(src.hours)} uur ${copy ? 'gekopieerd' : 'verplaatst'} naar ${where}${dst ? `, opgeteld bij ${fh(dst.hours)} uur` : ''}`);
+      toast(`${fh(src.hours)} uur ${copy ? 'gekopieerd' : 'verplaatst'} naar ${dayLabel(toDate)}${existing ? `, opgeteld bij ${fh(existing.hours)} uur` : ''}`);
     } catch (e) {
       toast(e.message, true);
       refreshSheetChrome(view);
     }
   }
 
-  function openNote(view, pid, date) {
-    const key = `${pid}|${date}`;
+  function openNote(view, rk, date) {
+    const { pid, aid } = parseKey(rk);
+    const key = cellKey(pid, aid, date);
     const entry = state.sheet.map.get(key);
-    const project = state.sheet.projects.find((p) => p.id === pid);
     if (!entry) {
       toast('Vul eerst de uren in, dan kun je er een omschrijving bij zetten');
-      const input = view.querySelector(`tr[data-project="${pid}"] input[data-date="${date}"]`);
-      if (input && !input.disabled) input.focus();
+      const input = cellAt(view, rk, date);
+      if (input && !input.querySelector('input').disabled) input.querySelector('input').focus();
       return;
     }
     const locked = !EDITABLE.includes(entry.status);
     openDialog({
-      title: `${project.name}, ${DAYS_LONG[dow(date)]} ${fmtDate(date)}`,
+      title: `${rowLabel(pid, aid)}, ${dayLabel(date)}`,
       submit: locked ? 'Sluiten' : 'Opslaan',
       body: `
         ${entry.rejection_reason ? `<div class="notice error">Afgekeurd: ${esc(entry.rejection_reason)}</div>` : ''}
@@ -885,10 +987,10 @@
         if (locked) return;
         const res = await api('/timesheet/entry', {
           method: 'PUT',
-          body: { project_id: pid, work_date: date, hours: entry.hours, description: fd.get('description') },
+          body: { project_id: pid, activity_id: aid || null, work_date: date, hours: entry.hours, description: fd.get('description') },
         });
         state.sheet.map.set(key, res);
-        paintCell(view.querySelector(`tr[data-project="${pid}"] td[data-date="${date}"]`), res);
+        paintCell(cellAt(view, rk, date), res);
         refreshSheetChrome(view);
       },
     });
@@ -957,7 +1059,7 @@
               <tr>
                 <td><input type="checkbox" checked value="${r.id}" aria-label="Selecteer regel"></td>
                 <td class="nowrap">${DAYS[dow(r.work_date)]} ${fmtDate(r.work_date)}</td>
-                <td>${esc(r.client_name || 'Intern')} / ${esc(r.project_name)}${r.billable ? '' : ' <span class="muted small">(niet declarabel)</span>'}</td>
+                <td>${esc(r.client_name || 'Intern')} / ${esc(r.project_name)}${r.activity_name ? `<br><span class="muted small">${esc(r.activity_name)}</span>` : ''}${r.billable ? '' : ' <span class="muted small">(niet declarabel)</span>'}</td>
                 <td class="num">${fh(r.hours)}</td>
                 ${status === 'approved' ? `<td class="num">${eur(r.rate)}</td>` : ''}
                 <td>${esc(r.description) || '<span class="muted">Geen omschrijving</span>'}</td>
@@ -1236,7 +1338,7 @@
 
   /* ================= Beheer ================= */
 
-  const ADMIN_TABS = { medewerkers: 'Medewerkers', klanten: 'Klanten', projecten: 'Projecten', koppeling: 'Koppeling e-Boekhouden' };
+  const ADMIN_TABS = { medewerkers: 'Medewerkers', klanten: 'Klanten', projecten: 'Projecten', activiteiten: 'Activiteiten', koppeling: 'Koppeling e-Boekhouden' };
 
   async function viewAdmin(view, params) {
     const tab = ADMIN_TABS[params[0]] ? params[0] : 'medewerkers';
@@ -1247,7 +1349,7 @@
       <div id="tab"></div>`;
     view.querySelectorAll('[data-href]').forEach((b) => b.addEventListener('click', () => { location.hash = b.dataset.href; }));
     const el = view.querySelector('#tab');
-    await ({ medewerkers: adminUsers, klanten: adminClients, projecten: adminProjects, koppeling: adminEb })[tab](el);
+    await ({ medewerkers: adminUsers, klanten: adminClients, projecten: adminProjects, activiteiten: adminActivities, koppeling: adminEb })[tab](el);
   }
 
   function userForm(u = {}) {
@@ -1321,7 +1423,9 @@
     const clients = await api('/admin/clients');
     el.innerHTML = `
       <section class="panel">
-        <div class="panel-pad row spread"><h2>Klanten</h2><button class="btn primary" data-new>Klant toevoegen</button></div>
+        <div class="panel-pad row spread"><h2>Klanten</h2>
+          <div class="row"><button class="btn" data-eb-import>Ophalen uit e-Boekhouden</button>
+          <button class="btn primary" data-new>Klant toevoegen</button></div></div>
         ${clients.length ? `<div class="table-wrap"><table class="data">
           <thead><tr><th>Naam</th><th>Relatie in e-Boekhouden</th><th class="num">Projecten</th><th>Status</th><th></th></tr></thead>
           <tbody>${clients.map((c) => `
@@ -1339,6 +1443,8 @@
             </tr>`).join('')}</tbody>
         </table></div>` : '<div class="empty"><p>Voeg je eerste klant toe en koppel hem aan een relatie in e-Boekhouden.</p></div>'}
       </section>`;
+
+    el.querySelector('[data-eb-import]').addEventListener('click', () => openEbClientImport(el));
 
     el.querySelector('[data-new]').addEventListener('click', () => openDialog({
       title: 'Klant toevoegen',
@@ -1438,19 +1544,23 @@
     const [projects, clients] = await Promise.all([api('/admin/projects'), api('/admin/clients')]);
     el.innerHTML = `
       <section class="panel">
-        <div class="panel-pad row spread"><h2>Projecten</h2><button class="btn primary" data-new>Project toevoegen</button></div>
+        <div class="panel-pad row spread"><h2>Projecten</h2>
+          <div class="row"><button class="btn" data-import>Importeren uit e-Boekhouden</button>
+          <button class="btn primary" data-new>Project toevoegen</button></div></div>
         ${projects.length ? `<div class="table-wrap"><table class="data">
-          <thead><tr><th>Klant / project</th><th>Code</th><th class="num">Tarief</th><th class="num">Budget</th><th class="num">Geschreven</th><th class="num">Team</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Klant / project</th><th>Code</th><th class="num">Tarief</th><th class="num">Budget</th><th class="num">Geschreven</th><th class="num">Activiteiten</th><th class="num">Team</th><th>Status</th><th></th></tr></thead>
           <tbody>${projects.map((p) => `
             <tr>
               <td>${esc(p.client_name || 'Intern')} / ${esc(p.name)}${p.billable ? '' : ' <span class="muted small">(niet declarabel)</span>'}</td>
               <td>${esc(p.code || '')}</td>
-              <td class="num">${p.billable ? eur(p.default_rate) : '–'}</td>
+              <td class="num">${!p.billable ? '–' : (p.default_rate ? eur(p.default_rate) : (p.activity_count ? '<span class="muted">Per activiteit</span>' : '<span class="badge submitted">Tarief ontbreekt</span>'))}</td>
               <td class="num">${p.budget_hours ? fh(p.budget_hours) : ''}</td>
               <td class="num">${fh(p.hours_total)}</td>
+              <td class="num">${p.activity_count || ''}</td>
               <td class="num">${p.member_count}</td>
               <td>${p.active ? 'Actief' : '<span class="muted">Afgesloten</span>'}</td>
               <td class="right nowrap">
+                <button class="btn small" data-acts="${p.id}">Activiteiten</button>
                 <button class="btn small" data-team="${p.id}">Team</button>
                 <button class="btn small" data-edit="${p.id}">Wijzigen</button>
               </td>
@@ -1466,6 +1576,8 @@
       budget_hours: numOrNull(fd.get('budget_hours')),
       billable: fd.get('billable') === 'on',
     });
+
+    el.querySelector('[data-import]').addEventListener('click', () => openProjectImport(el, projects, clients));
 
     el.querySelector('[data-new]').addEventListener('click', () => openDialog({
       title: 'Project toevoegen',
@@ -1494,6 +1606,382 @@
     el.querySelectorAll('[data-team]').forEach((b) => b.addEventListener('click', () => {
       openTeam(el, projects.find((x) => x.id === Number(b.dataset.team)));
     }));
+    el.querySelectorAll('[data-acts]').forEach((b) => b.addEventListener('click', () => {
+      openProjectActivities(el, projects.find((x) => x.id === Number(b.dataset.acts)));
+    }));
+  }
+
+  /* ---------- Importeren uit e-Boekhouden-exports ---------- */
+
+  const SHEETJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+  let sheetJsPromise = null;
+  function loadSheetJs() {
+    if (window.XLSX) return Promise.resolve(window.XLSX);
+    if (!sheetJsPromise) {
+      sheetJsPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = SHEETJS_URL;
+        s.onload = () => (window.XLSX ? resolve(window.XLSX) : reject(new Error('Excel-lezer kon niet worden geladen')));
+        s.onerror = () => { sheetJsPromise = null; reject(new Error('Excel-lezer kon niet worden geladen. Controleer je internetverbinding.')); };
+        document.head.appendChild(s);
+      });
+    }
+    return sheetJsPromise;
+  }
+
+  const normName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/(bv|nv|vof)$/, '');
+
+  // Leest een export uit e-Boekhouden: bedrijfsgegevens bovenaan, daarna een kopregel met de gevraagde kolommen.
+  // columns: { veld: 'Kolomnaam' }; de eerste kolom is verplicht per regel.
+  async function readExport(file, columns, hint) {
+    const XLSX = await loadSheetJs();
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
+    const wanted = Object.entries(columns);
+    const required = wanted.slice(0, 2).map(([, label]) => normName(label));
+    const hi = rows.findIndex((r) => required.every((col) => r.some((c) => normName(c) === col)));
+    if (hi < 0) throw new Error(hint);
+    const head = rows[hi];
+    const idx = Object.fromEntries(wanted.map(([key, label]) => [key, head.findIndex((c) => normName(c) === normName(label))]));
+    const firstKey = wanted[0][0];
+    const firstText = rows.slice(0, hi).map((r) => r.find((c) => String(c).trim())).find(Boolean);
+    const items = rows.slice(hi + 1)
+      .map((r) => Object.fromEntries(wanted.map(([key]) => [key, idx[key] >= 0 ? String(r[idx[key]] ?? '').trim() : ''])))
+      .filter((x) => x[firstKey]);
+    if (!items.length) throw new Error('Het bestand bevat geen regels onder de kopregel');
+    return { company: firstText ? String(firstText).trim() : '', items };
+  }
+
+  // Relaties uit e-Boekhouden; null als de koppeling (nog) niet werkt.
+  async function loadEbRelations() {
+    try { return await api('/admin/eb/relations'); } catch { return null; }
+  }
+
+  function openProjectImport(el, projects, clients) {
+    let parsed = null;
+    let relations = null;
+    const clientByName = new Map(clients.map((c) => [normName(c.name), c]));
+    const existing = new Set(projects.map((p) => `${p.client_id || 0}|${p.name.trim().toLowerCase()}`));
+
+    const preview = (form) => {
+      const box = form.querySelector('[data-preview]');
+      if (!parsed) { box.innerHTML = ''; return; }
+      const relByName = new Map((relations || []).filter((x) => !x.inactive).map((x) => [normName(x.name), x]));
+      const internal = normName(form.internal_name.value);
+      const newClients = new Set();
+      const linkClients = new Set();
+      const seen = new Set();
+      let created = 0;
+      const rows = parsed.items.map((it) => {
+        const isInternal = !it.relation || (internal && normName(it.relation) === internal);
+        const client = isInternal ? null : clientByName.get(normName(it.relation));
+        const rel = isInternal ? null : relByName.get(normName(it.relation));
+        if (!isInternal && !client) newClients.add(normName(it.relation));
+        if (!isInternal && rel && (!client || !client.eb_relation_id)) linkClients.add(normName(it.relation));
+        const key = `${client ? client.id : (isInternal ? 0 : `new:${normName(it.relation)}`)}|${it.project.toLowerCase()}`;
+        const skip = existing.has(key) || seen.has(key);
+        seen.add(key);
+        if (!skip) created += 1;
+        let klant;
+        if (isInternal) klant = 'Intern, niet declarabel';
+        else {
+          const ebInfo = client && client.eb_relation_id ? ''
+            : rel ? ` <span class="badge approved">koppelt aan ${esc(rel.code || rel.name)}</span>`
+              : relations ? ' <span class="badge submitted">niet in e-Boekhouden gevonden</span>' : '';
+          klant = `${esc(client ? client.name : it.relation)}${client ? '' : ' <span class="badge">nieuwe klant</span>'}${ebInfo}`;
+        }
+        return `<tr${skip ? ' class="muted"' : ''}><td>${esc(it.project)}</td><td>${klant}</td>
+          <td>${skip ? 'Bestaat al, wordt overgeslagen' : 'Nieuw project'}</td></tr>`;
+      }).join('');
+      const parts = [
+        `<strong>${created} ${created === 1 ? 'project wordt' : 'projecten worden'} aangemaakt</strong>`,
+        parsed.items.length - created ? `${parsed.items.length - created} overgeslagen` : '',
+        newClients.size ? `${newClients.size} ${newClients.size === 1 ? 'nieuwe klant' : 'nieuwe klanten'}` : '',
+        linkClients.size ? `${linkClients.size} ${linkClients.size === 1 ? 'klant wordt' : 'klanten worden'} gekoppeld aan e-Boekhouden` : '',
+      ].filter(Boolean);
+      box.innerHTML = `
+        <p>${parts.join(', ')}.</p>
+        ${relations === null ? '<p class="muted small">e-Boekhouden is niet bereikbaar; nieuwe klanten koppel je later onder Klanten.</p>' : ''}
+        <div class="table-wrap import-preview"><table class="data">
+          <thead><tr><th>Project</th><th>Klant</th><th>Resultaat</th></tr></thead>
+          <tbody>${rows}</tbody></table></div>`;
+    };
+
+    openDialog({
+      title: 'Projecten importeren',
+      submit: 'Importeren',
+      wide: true,
+      body: `
+        <p class="muted small">Exporteer in e-Boekhouden je projecten via Uren › Configuratie › Projecten en kies het bestand hier. Een eigen Excel- of CSV-bestand met de kolommen "Project" en "Relatie" werkt ook.</p>
+        <label class="field">Bestand<input type="file" name="file" accept=".xlsx,.xls,.csv" required></label>
+        <div class="form-grid">
+          <label class="field">Eigen bedrijf<span class="hint">Projecten met deze relatie worden intern</span><input name="internal_name"></label>
+          <label class="field">Uurtarief nieuwe projecten (€)<span class="hint">Alleen nodig voor projecten zonder activiteiten</span><input name="default_rate" inputmode="decimal" placeholder="0"></label>
+        </div>
+        <label class="check"><input type="checkbox" name="add_me" checked> Mij toevoegen aan het team van de nieuwe projecten</label>
+        <div data-preview></div>`,
+      onOpen: (form) => {
+        loadEbRelations().then((r) => { relations = r; preview(form); });
+        form.file.addEventListener('change', async () => {
+          const box = form.querySelector('[data-preview]');
+          parsed = null;
+          if (!form.file.files[0]) { box.innerHTML = ''; return; }
+          box.innerHTML = '<p class="muted">Bestand lezen…</p>';
+          try {
+            parsed = await readExport(form.file.files[0], { project: 'Project', relation: 'Relatie' },
+              'Geen kolommen "Project" en "Relatie" gevonden. Gebruik de export uit e-Boekhouden (Uren › Configuratie › Projecten) of een bestand met die twee kolommen.');
+            if (parsed.company && !form.internal_name.value) form.internal_name.value = parsed.company;
+            preview(form);
+          } catch (e) {
+            box.innerHTML = `<div class="notice error">${esc(e.message)}</div>`;
+          }
+        });
+        form.internal_name.addEventListener('input', () => preview(form));
+      },
+      onSubmit: async (fd) => {
+        if (!parsed) throw new Error('Kies eerst een bestand met projecten');
+        const res = await api('/admin/projects/import', {
+          method: 'POST',
+          body: {
+            rows: parsed.items,
+            internal_name: fd.get('internal_name'),
+            default_rate: numOrNull(fd.get('default_rate')) ?? 0,
+            add_me: fd.get('add_me') === 'on',
+          },
+        });
+        const unlinked = res.clients_created - res.clients_linked;
+        toast(`${res.created} ${res.created === 1 ? 'project' : 'projecten'} geïmporteerd${res.skipped ? `, ${res.skipped} overgeslagen` : ''}`
+          + `${res.clients_linked ? `. ${res.clients_linked} ${res.clients_linked === 1 ? 'klant' : 'klanten'} gekoppeld aan e-Boekhouden` : ''}`
+          + `${unlinked > 0 ? `. Koppel ${unlinked === 1 ? 'de nieuwe klant' : `de ${unlinked} overige nieuwe klanten`} nog onder Klanten` : ''}.`);
+        adminProjects(el);
+      },
+    });
+  }
+
+  /* ---------- Activiteiten ---------- */
+
+  async function adminActivities(el) {
+    const acts = await api('/admin/activities');
+    el.innerHTML = `
+      <section class="panel">
+        <div class="panel-pad row spread"><h2>Activiteiten</h2>
+          <div class="row"><button class="btn" data-import>Importeren uit e-Boekhouden</button>
+          <button class="btn primary" data-new>Activiteit toevoegen</button></div></div>
+        <div class="panel-pad" style="padding-top:0"><p class="muted small">Welke activiteiten bij een project horen, en eventueel een afwijkend tarief, stel je in bij het project onder Projecten › Activiteiten.</p></div>
+        ${acts.length ? `<div class="table-wrap"><table class="data">
+          <thead><tr><th>Naam</th><th>Omschrijving</th><th class="num">Standaardtarief</th><th class="num">Projecten</th><th>Status</th><th></th></tr></thead>
+          <tbody>${acts.map((a) => `
+            <tr>
+              <td>${esc(a.name)}</td>
+              <td class="muted">${esc(a.description || '')}</td>
+              <td class="num">${a.default_rate === null ? '<span class="muted">Geen</span>' : eur(a.default_rate)}</td>
+              <td class="num">${a.project_count}</td>
+              <td>${a.active ? 'Actief' : '<span class="muted">Inactief</span>'}</td>
+              <td class="right"><button class="btn small" data-edit="${a.id}">Wijzigen</button></td>
+            </tr>`).join('')}</tbody>
+        </table></div>` : '<div class="empty"><p>Nog geen activiteiten. Importeer ze uit e-Boekhouden of voeg ze zelf toe.</p></div>'}
+      </section>`;
+
+    const form = (a = {}) => `
+      <div class="form-grid">
+        <label class="field">Naam<input name="name" value="${esc(a.name)}" required maxlength="120"></label>
+        <label class="field">Standaardtarief (€)<span class="hint">Leeg = tarief van medewerker of project</span><input name="default_rate" inputmode="decimal" value="${fmtInput(a.default_rate)}"></label>
+      </div>
+      <label class="field">Omschrijving<span class="hint">Optioneel</span><input name="description" value="${esc(a.description)}" maxlength="500"></label>
+      ${a.id ? `<label class="check"><input type="checkbox" name="active"${a.active ? ' checked' : ''}> Actief</label>` : ''}`;
+    const collect = (fd) => ({ name: fd.get('name'), description: fd.get('description'), default_rate: numOrNull(fd.get('default_rate')) });
+
+    el.querySelector('[data-new]').addEventListener('click', () => openDialog({
+      title: 'Activiteit toevoegen',
+      submit: 'Toevoegen',
+      body: form(),
+      onSubmit: async (fd) => {
+        await api('/admin/activities', { method: 'POST', body: collect(fd) });
+        adminActivities(el);
+      },
+    }));
+    el.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => {
+      const a = acts.find((x) => x.id === Number(b.dataset.edit));
+      openDialog({
+        title: `${a.name} wijzigen`,
+        body: form(a),
+        onSubmit: async (fd) => {
+          await api(`/admin/activities/${a.id}`, { method: 'PATCH', body: { ...collect(fd), active: fd.get('active') === 'on' } });
+          adminActivities(el);
+        },
+      });
+    }));
+    el.querySelector('[data-import]').addEventListener('click', () => openActivityImport(el, acts));
+  }
+
+  function openActivityImport(el, acts) {
+    let parsed = null;
+    const byName = new Map(acts.map((a) => [a.name.trim().toLowerCase(), a]));
+    const rateOf = (v) => (String(v).trim() === '' ? null : numOrNull(v));
+
+    const preview = (form) => {
+      const box = form.querySelector('[data-preview]');
+      if (!parsed) { box.innerHTML = ''; return; }
+      const update = form.update_rates.checked;
+      let created = 0;
+      let updated = 0;
+      const rows = parsed.items.map((it) => {
+        const ex = byName.get(it.name.toLowerCase());
+        const rate = rateOf(it.rate);
+        let result = 'Nieuwe activiteit';
+        if (!ex) created += 1;
+        else if (update && rate !== ex.default_rate) { result = `Tarief wordt ${rate === null ? 'leeg' : eur(rate)} (was ${ex.default_rate === null ? 'leeg' : eur(ex.default_rate)})`; updated += 1; }
+        else result = 'Bestaat al, wordt overgeslagen';
+        return `<tr${ex && result.startsWith('Bestaat') ? ' class="muted"' : ''}><td>${esc(it.name)}</td>
+          <td class="num">${rate === null ? '–' : eur(rate)}</td><td>${result}</td></tr>`;
+      }).join('');
+      box.innerHTML = `
+        <p><strong>${created} ${created === 1 ? 'activiteit wordt' : 'activiteiten worden'} aangemaakt</strong>${updated ? `, ${updated} ${updated === 1 ? 'tarief' : 'tarieven'} bijgewerkt` : ''}.</p>
+        <div class="table-wrap import-preview"><table class="data">
+          <thead><tr><th>Activiteit</th><th class="num">Uurtarief</th><th>Resultaat</th></tr></thead>
+          <tbody>${rows}</tbody></table></div>`;
+    };
+
+    openDialog({
+      title: 'Activiteiten importeren',
+      submit: 'Importeren',
+      wide: true,
+      body: `
+        <p class="muted small">Exporteer in e-Boekhouden je activiteiten via Uren › Configuratie › Activiteiten en kies het bestand hier. Een eigen bestand met de kolommen "Naam" en "Uurtarief" werkt ook.</p>
+        <label class="field">Bestand<input type="file" name="file" accept=".xlsx,.xls,.csv" required></label>
+        <label class="check"><input type="checkbox" name="update_rates" checked> Tarieven van bestaande activiteiten bijwerken</label>
+        <div data-preview></div>`,
+      onOpen: (form) => {
+        form.file.addEventListener('change', async () => {
+          const box = form.querySelector('[data-preview]');
+          parsed = null;
+          if (!form.file.files[0]) { box.innerHTML = ''; return; }
+          box.innerHTML = '<p class="muted">Bestand lezen…</p>';
+          try {
+            parsed = await readExport(form.file.files[0], { name: 'Naam', rate: 'Uurtarief' },
+              'Geen kolommen "Naam" en "Uurtarief" gevonden. Gebruik de export uit e-Boekhouden (Uren › Configuratie › Activiteiten).');
+            preview(form);
+          } catch (e) {
+            box.innerHTML = `<div class="notice error">${esc(e.message)}</div>`;
+          }
+        });
+        form.update_rates.addEventListener('change', () => preview(form));
+      },
+      onSubmit: async (fd) => {
+        if (!parsed) throw new Error('Kies eerst een bestand met activiteiten');
+        const res = await api('/admin/activities/import', {
+          method: 'POST',
+          body: {
+            rows: parsed.items.map((it) => ({ name: it.name, rate: rateOf(it.rate) })),
+            update_rates: fd.get('update_rates') === 'on',
+          },
+        });
+        toast(`${res.created} ${res.created === 1 ? 'activiteit' : 'activiteiten'} geïmporteerd${res.updated ? `, ${res.updated} tarieven bijgewerkt` : ''}. Koppel ze nu aan projecten onder Projecten › Activiteiten.`);
+        adminActivities(el);
+      },
+    });
+  }
+
+  async function openProjectActivities(el, project) {
+    const list = await api(`/admin/projects/${project.id}/activities`);
+    const fallback = (a) => (a.default_rate !== null ? a.default_rate : project.default_rate);
+    openDialog({
+      title: `Activiteiten van ${project.name}`,
+      wide: true,
+      body: `
+        <p class="muted small">Medewerkers kiezen bij dit project een van de aangevinkte activiteiten. Een afwijkend tarief geldt alleen voor dit project; leeg laten betekent het standaardtarief van de activiteit.</p>
+        ${list.length ? `<div class="table-wrap"><table class="data">
+          <thead><tr><th>Activiteit</th><th class="num">Standaard</th><th>Afwijkend tarief (€)</th></tr></thead>
+          <tbody>${list.map((a) => `
+            <tr>
+              <td><label class="check"><input type="checkbox" name="a${a.activity_id}"${a.linked ? ' checked' : ''}> ${esc(a.name)}${a.active ? '' : ' <span class="muted small">(inactief)</span>'}</label></td>
+              <td class="num">${a.default_rate === null ? '–' : eur(a.default_rate)}</td>
+              <td><input name="r${a.activity_id}" inputmode="decimal" value="${fmtInput(a.rate)}" placeholder="${String(fallback(a) ?? '').replace('.', ',')}" size="8" aria-label="Tarief ${esc(a.name)}"></td>
+            </tr>`).join('')}</tbody>
+        </table></div>` : '<p class="muted">Er zijn nog geen activiteiten. Voeg er hieronder een toe of importeer ze onder Beheer › Activiteiten.</p>'}
+        <div class="form-grid">
+          <label class="field">Nieuwe activiteit<span class="hint">Optioneel, wordt meteen gekoppeld</span><input name="new_name" maxlength="120"></label>
+          <label class="field">Tarief nieuwe activiteit (€)<input name="new_rate" inputmode="decimal"></label>
+        </div>`,
+      onSubmit: async (fd) => {
+        for (const a of list) {
+          const want = fd.get(`a${a.activity_id}`) === 'on';
+          const rate = numOrNull(fd.get(`r${a.activity_id}`));
+          if (want && (!a.linked || rate !== a.rate)) {
+            await api(`/admin/projects/${project.id}/activities/${a.activity_id}`, { method: 'PUT', body: { rate } });
+          } else if (!want && a.linked) {
+            await api(`/admin/projects/${project.id}/activities/${a.activity_id}`, { method: 'DELETE' });
+          }
+        }
+        const newName = String(fd.get('new_name') || '').trim();
+        if (newName) {
+          const created = await api('/admin/activities', { method: 'POST', body: { name: newName, default_rate: numOrNull(fd.get('new_rate')) } });
+          await api(`/admin/projects/${project.id}/activities/${created.id}`, { method: 'PUT', body: { rate: null } });
+        }
+        toast('Activiteiten opgeslagen');
+        adminProjects(el);
+      },
+    });
+  }
+
+  /* ---------- Klanten ophalen uit e-Boekhouden ---------- */
+
+  async function openEbClientImport(el) {
+    let relations;
+    try {
+      relations = await api('/admin/eb/relations');
+    } catch (e) {
+      toast(e.message, true);
+      return;
+    }
+    const render = (form) => {
+      const q = normName(form.q.value);
+      const showInactive = form.inactive.checked;
+      const rows = relations
+        .filter((r) => (showInactive || !r.inactive) && (!q || normName(`${r.name} ${r.code}`).includes(q)))
+        .map((r) => {
+          const linked = Boolean(r.client_id);
+          const status = linked ? `Al gekoppeld aan ${esc(r.client_name)}`
+            : r.match_client_id ? 'Bestaande klant met deze naam wordt gekoppeld' : 'Wordt nieuwe klant';
+          return `<tr${linked ? ' class="muted"' : ''}>
+            <td><input type="checkbox" name="rel" value="${r.id}"${linked ? ' disabled' : ''}${form.dataset[`c${r.id}`] ? ' checked' : ''} aria-label="${esc(r.name)}"></td>
+            <td>${esc(r.code)}</td><td>${esc(r.name)}${r.inactive ? ' <span class="muted small">(inactief)</span>' : ''}</td><td>${status}</td></tr>`;
+        }).join('');
+      form.querySelector('[data-list]').innerHTML = rows
+        ? `<div class="table-wrap import-preview"><table class="data"><thead><tr><th></th><th>Code</th><th>Naam</th><th>Resultaat</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : '<p class="muted">Geen relaties gevonden.</p>';
+    };
+    openDialog({
+      title: 'Klanten ophalen uit e-Boekhouden',
+      submit: 'Ophalen',
+      wide: true,
+      body: `
+        <p class="muted small">Kies welke relaties je als klant wilt gebruiken. Ze worden direct gekoppeld, zodat je ze kunt factureren.</p>
+        <div class="row">
+          <label class="field grow">Zoeken<input name="q" placeholder="Naam of code" autocomplete="off"></label>
+          <label class="check" style="align-self:end"><input type="checkbox" name="inactive"> Ook inactieve relaties</label>
+        </div>
+        <div data-list></div>`,
+      onOpen: (form) => {
+        render(form);
+        form.q.addEventListener('input', () => render(form));
+        form.inactive.addEventListener('change', () => render(form));
+        // Vinkjes onthouden tijdens zoeken
+        form.addEventListener('change', (e) => {
+          if (e.target.name === 'rel') {
+            if (e.target.checked) form.dataset[`c${e.target.value}`] = '1';
+            else delete form.dataset[`c${e.target.value}`];
+          }
+        });
+      },
+      onSubmit: async (fd, form) => {
+        const ids = Object.keys(form.dataset).filter((k) => /^c\d+$/.test(k)).map((k) => Number(k.slice(1)));
+        if (!ids.length) throw new Error('Selecteer een of meer relaties');
+        const res = await api('/admin/clients/import-eb', { method: 'POST', body: { relation_ids: ids } });
+        toast(`${res.created} ${res.created === 1 ? 'klant' : 'klanten'} toegevoegd${res.linked ? `, ${res.linked} bestaande gekoppeld` : ''}`);
+        adminClients(el);
+      },
+    });
   }
 
   async function openTeam(el, project) {

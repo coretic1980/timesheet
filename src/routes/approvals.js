@@ -17,26 +17,35 @@ r.get('/', ah(async (req, res) => {
   const { rows } = await query(
     `SELECT e.id, e.work_date, e.hours, e.description, e.status, e.rejection_reason, e.rate,
             u.id AS user_id, u.name AS user_name,
-            p.id AS project_id, p.name AS project_name, p.billable, c.name AS client_name
+            p.id AS project_id, p.name AS project_name, p.billable, c.name AS client_name,
+            e.activity_id, ac.name AS activity_name
        FROM time_entries e
        JOIN users u ON u.id = e.user_id
        JOIN projects p ON p.id = e.project_id
        LEFT JOIN clients c ON c.id = p.client_id
+       LEFT JOIN activities ac ON ac.id = e.activity_id
       WHERE e.status = $1 ${period}
-      ORDER BY u.name, e.work_date, c.name NULLS LAST, p.name`,
+      ORDER BY u.name, e.work_date, c.name NULLS LAST, p.name, ac.name NULLS FIRST`,
     params
   );
   res.json(rows);
 }));
 
-// Bij goedkeuring wordt het tarief vastgelegd: medewerkertarief op het project, anders projecttarief.
+// Bij goedkeuring wordt het tarief vastgelegd, in deze volgorde:
+// 1. afwijkend tarief van de activiteit op dit project
+// 2. tarief van de medewerker op dit project
+// 3. standaardtarief van de activiteit
+// 4. projecttarief
 r.post('/approve', ah(async (req, res) => {
   const ids = idList(req.body.ids);
   const { rowCount } = await query(
     `UPDATE time_entries e
         SET status = 'approved', approved_by = $2, approved_at = now(), updated_at = now(),
             rate = COALESCE(
+              (SELECT pa.rate FROM project_activities pa
+                WHERE pa.project_id = e.project_id AND pa.activity_id = e.activity_id),
               (SELECT a.rate FROM assignments a WHERE a.project_id = e.project_id AND a.user_id = e.user_id),
+              (SELECT ac.default_rate FROM activities ac WHERE ac.id = e.activity_id),
               (SELECT p.default_rate FROM projects p WHERE p.id = e.project_id))
       WHERE e.id = ANY($1) AND e.status = 'submitted'`,
     [ids, req.user.id]

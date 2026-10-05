@@ -65,11 +65,12 @@ r.get('/export.csv', ah(async (req, res) => {
   const { from, to } = period(req.query);
   const { rows } = await query(
     `SELECT e.work_date, u.name AS user_name, c.name AS client_name, p.code, p.name AS project_name,
-            e.hours, e.rate, e.status, e.description, i.eb_invoice_number
+            ac.name AS activity_name, e.hours, e.rate, e.status, e.description, i.eb_invoice_number
        FROM time_entries e
        JOIN users u ON u.id = e.user_id
        JOIN projects p ON p.id = e.project_id
        LEFT JOIN clients c ON c.id = p.client_id
+       LEFT JOIN activities ac ON ac.id = e.activity_id
        LEFT JOIN invoices i ON i.id = e.invoice_id
       WHERE e.work_date BETWEEN $1 AND $2
       ORDER BY e.work_date, u.name, p.name`,
@@ -81,9 +82,9 @@ r.get('/export.csv', ah(async (req, res) => {
     const s = typeof v === 'number' ? String(v).replace('.', ',') : String(v);
     return /[;"\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const header = ['Datum', 'Medewerker', 'Klant', 'Projectcode', 'Project', 'Uren', 'Tarief', 'Status', 'Omschrijving', 'Factuur'];
+  const header = ['Datum', 'Medewerker', 'Klant', 'Projectcode', 'Project', 'Activiteit', 'Uren', 'Tarief', 'Status', 'Omschrijving', 'Factuur'];
   const lines = rows.map((x) => [
-    x.work_date, x.user_name, x.client_name || 'Intern', x.code, x.project_name, x.hours, x.rate,
+    x.work_date, x.user_name, x.client_name || 'Intern', x.code, x.project_name, x.activity_name, x.hours, x.rate,
     STATUS_NL[x.status], x.description, x.eb_invoice_number,
   ].map(cell).join(';'));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');

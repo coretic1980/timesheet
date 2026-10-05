@@ -79,7 +79,10 @@ function fmtDateNl(iso) {
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
+// Namen vergelijken zonder hoofdletters, leestekens en rechtsvorm: "Aiden Netherlands B.V." = "aiden netherlands bv".
+const normName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/(bv|nv|vof)$/, '');
+
 module.exports = {
   HttpError, ah, isoDate, addDays, todayIso, weekRange, workdaysBetween,
-  num, str, intParam, idList, fmtDateNl, round2,
+  num, str, intParam, idList, fmtDateNl, round2, normName,
 };

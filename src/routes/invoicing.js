@@ -7,13 +7,15 @@ const r = express.Router();
 
 const BILLABLE_SQL = (lock) => `
   SELECT e.id, e.hours, e.rate, e.work_date, e.user_id, u.name AS user_name,
-         e.project_id, p.name AS project_name, p.code AS project_code
+         e.project_id, p.name AS project_name, p.code AS project_code,
+         e.activity_id, ac.name AS activity_name
     FROM time_entries e
     JOIN projects p ON p.id = e.project_id
     JOIN users u ON u.id = e.user_id
+    LEFT JOIN activities ac ON ac.id = e.activity_id
    WHERE p.client_id = $1 AND p.billable AND e.status = 'approved' AND e.invoice_id IS NULL
      AND e.work_date BETWEEN $2 AND $3
-   ORDER BY p.name, u.name, e.work_date
+   ORDER BY p.name, ac.name NULLS FIRST, u.name, e.work_date
    ${lock ? 'FOR UPDATE OF e' : ''}`;
 
 function parsePeriod(src) {
@@ -23,17 +25,18 @@ function parsePeriod(src) {
   return { from, to };
 }
 
-// Eén factuurregel per project × medewerker × tarief.
+// Eén factuurregel per project × activiteit × medewerker × tarief.
 function buildLines(entries) {
   const groups = new Map();
   for (const e of entries) {
     if (e.rate === null || e.rate === undefined) {
       throw new HttpError(400, `Uren van ${e.user_name} op ${e.project_name} hebben geen tarief. Heropen en keur ze opnieuw goed.`);
     }
-    const key = `${e.project_id}|${e.user_id}|${e.rate}`;
+    const key = `${e.project_id}|${e.activity_id || 0}|${e.user_id}|${e.rate}`;
     if (!groups.has(key)) {
       groups.set(key, {
         project_id: e.project_id, project_name: e.project_name, project_code: e.project_code,
+        activity_name: e.activity_name,
         user_name: e.user_name, rate: e.rate, hours: 0, first: e.work_date, last: e.work_date, ids: [],
       });
     }
@@ -46,7 +49,8 @@ function buildLines(entries) {
   return [...groups.values()].map((g) => ({
     ...g,
     amount: round2(g.hours * g.rate),
-    description: `${g.project_code ? `${g.project_code} ` : ''}${g.project_name} – ${g.user_name}, `
+    description: `${g.project_code ? `${g.project_code} ` : ''}${g.project_name}`
+      + `${g.activity_name ? ` – ${g.activity_name}` : ''} – ${g.user_name}, `
       + `${fmtDateNl(g.first)} t/m ${fmtDateNl(g.last)}`,
   }));
 }
