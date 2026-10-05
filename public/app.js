@@ -1526,9 +1526,11 @@
               <tr>
                 <td>${many ? `<input type="checkbox" data-proj="${x.id}"${selected.has(x.id) ? ' checked' : ''} aria-label="${esc(x.name)}">` : ''}</td>
                 <td>${esc(x.name)}</td>
-                <td><input class="po-input${x.reference ? '' : ' missing'}" data-proj-ref="${x.id}" value="${esc(x.reference || '')}" maxlength="50"
-                  placeholder="${esc(poFromName(x.name) || 'PO toevoegen')}" aria-label="PO / referentie van ${esc(x.name)}"
-                  title="Wordt opgeslagen bij het project"></td>
+                <td><div class="row" style="gap:0.4rem;flex-wrap:nowrap">
+                  <input class="po-input${x.reference ? '' : ' missing'}" data-proj-ref="${x.id}" value="${esc(x.reference || '')}" maxlength="50"
+                    placeholder="Nog geen PO" aria-label="PO / referentie van ${esc(x.name)}" title="Wordt opgeslagen bij het project">
+                  ${!x.reference && poFromName(x.name) ? `<button type="button" class="btn small" data-proj-ref-use="${x.id}" data-value="${esc(poFromName(x.name))}">${esc(poFromName(x.name))} gebruiken</button>` : ''}
+                </div></td>
                 <td class="num">${fh(x.hours)}</td>
                 <td class="num">${eur(x.amount)}</td>
                 <td class="right">${many ? `<button type="button" class="btn small" data-proj-only="${x.id}">Alleen ${x.reference ? 'deze PO' : 'dit project'}</button>` : ''}</td>
@@ -1554,7 +1556,7 @@
             <div class="form-grid">
               <label class="field">Factuurnummer<span class="hint">Volgende vrije nummer${p.invoice_number.source === 'e-Boekhouden' ? ' in e-Boekhouden' : ' (e-Boekhouden niet bereikbaar, gebaseerd op de app)'}</span><input name="invoice_number" maxlength="30" value="${esc(p.invoice_number.number)}"></label>
               <label class="field">Factuurdatum<input type="date" name="date" value="${todayIso()}" required></label>
-              <label class="field">Referentie<span class="hint">${p.reference ? 'Ingevuld vanuit de PO van het project' : 'Het project heeft nog geen PO; vul die hierboven in'}</span><input name="reference" maxlength="50" value="${esc(p.reference || '')}"></label>
+              <label class="field">Referentie op deze factuur<span class="hint">${p.reference ? 'Uit de PO van het project; aanpassen geldt alleen voor deze factuur' : 'Leeg: het project heeft nog geen PO (vul die hierboven in)'}</span><input name="reference" maxlength="50" value="${esc(p.reference || '')}"></label>
             </div>
             <label class="field">Factuurtekst<input name="text" maxlength="2000" value="${esc(p.invoice_text || '')}"></label>
             <label class="check"><input type="checkbox" name="send_email"${p.email_default ? ' checked' : ''}> Factuur direct mailen naar de klant (naar het factuur-e-mailadres in e-Boekhouden${p.email_template ? ', met het gekozen e-mailsjabloon' : ''})</label>
@@ -1585,6 +1587,8 @@
           } catch (e) { toast(e.message, true); }
         };
         inp.addEventListener('change', save);
+        const use = box.querySelector(`[data-proj-ref-use="${inp.dataset.projRef}"]`);
+        if (use) use.addEventListener('click', () => { inp.value = use.dataset.value; save(); });
         inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); inp.blur(); } });
       });
       box.querySelectorAll('[data-proj-only]').forEach((b) => b.addEventListener('click', () => {
@@ -1935,7 +1939,7 @@
         </select></label>
         <label class="field">Projectnaam<input name="name" value="${esc(p.name)}" required maxlength="200"></label>
         <label class="field">Code<span class="hint">Optioneel, komt op de factuurregel</span><input name="code" value="${esc(p.code)}" maxlength="30"></label>
-        <label class="field">PO / referentie<span class="hint">${!p.reference && poFromName(p.name) ? 'Voorgesteld uit de projectnaam; ' : ''}wordt de referentie op de factuur</span><input name="reference" value="${esc(p.reference || poFromName(p.name) || '')}" maxlength="50"></label>
+        <label class="field">PO / referentie<span class="hint">Wordt de referentie op de factuur${!p.reference && poFromName(p.name) ? `. Uit de naam: ${esc(poFromName(p.name))}` : ''}</span><input name="reference" value="${esc(p.reference || '')}" maxlength="50"${!p.reference && poFromName(p.name) ? ` placeholder="Bijv. ${esc(poFromName(p.name))}"` : ''}></label>
         <label class="field">Uurtarief (€)<span class="hint">Standaard; per medewerker aan te passen</span><input name="default_rate" inputmode="decimal" value="${fmtInput(p.default_rate)}"></label>
         <label class="field">Budget (uren)<span class="hint">Optioneel</span><input name="budget_hours" inputmode="decimal" value="${fmtInput(p.budget_hours)}"></label>
       </div>
