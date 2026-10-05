@@ -493,3 +493,45 @@ td.empty-row { padding: 1.5rem 1rem; text-align: center; color: var(--muted); }
 [data-line-example] { font-weight: 500; }
 
 #hours-import h3 { margin-top: 0.75rem; }
+
+/* Lijst per project/activiteit */
+.list-card + .list-card { margin-top: 0.75rem; }
+.list-card header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; padding: 0.8rem 1.1rem; border-bottom: 1px solid var(--line-soft); }
+.list-card header .client { display: block; font-size: 0.8rem; color: var(--muted); }
+.list-card header h3 { font-size: 1rem; }
+.le-date { display: block; font-weight: 600; font-size: 0.9rem; }
+.le-date::first-letter { text-transform: uppercase; }
+.list-quick {
+  display: grid;
+  grid-template-columns: minmax(9rem, 11rem) 5.5rem minmax(10rem, 1fr) auto;
+  gap: 0.5rem;
+  padding: 0.75rem 1.1rem;
+  background: color-mix(in srgb, var(--paper) 45%, var(--surface));
+  border-top: 1px solid var(--line-soft);
+  border-radius: 0 0 var(--radius-m) var(--radius-m);
+}
+.list-card header + .list-quick { border-top: 0; }
+@media (max-width: 640px) {
+  .list-quick { grid-template-columns: 1fr 5.5rem; }
+  .list-quick input[name="description"], .list-quick button { grid-column: 1 / -1; }
+}
+
+/* Filter boven urenstaat */
+.sheet-filter { display: flex; flex-wrap: wrap; gap: 0.75rem 1rem; align-items: flex-end; margin-bottom: 0.9rem; }
+.sheet-filter .field { min-width: 0; }
+.sheet-filter select { width: 20rem; max-width: 100%; }
+.sheet-filter-info { display: flex; align-items: center; gap: 0.5rem; padding-bottom: 0.3rem; }
+@media (max-width: 640px) {
+  .sheet-filter .field, .sheet-filter select { width: 100%; }
+}
+
+/* Budget per regel */
+.budget { display: inline-block; margin-top: 0.2rem; font-size: 0.75rem; font-weight: 500; color: var(--muted); }
+table.grid .proj .budget { display: block; }
+.budget.warn { color: var(--submitted); }
+.budget.over { color: var(--rejected); font-weight: 600; }
+.list-card header .budget { display: block; }
+.act-table input[inputmode] { width: 5.5rem; }
+.act-table th, .act-table td { padding-left: 0.5rem; padding-right: 0.5rem; }
+.act-table td:first-child { min-width: 12rem; }
+dialog.wide { width: min(980px, calc(100vw - 2rem)); }

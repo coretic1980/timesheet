@@ -2,7 +2,7 @@
   'use strict';
 
   const app = document.getElementById('app');
-  const state = { user: null, pendingCount: 0, sheet: null, extraRows: {}, invoicePeriod: null, reportPeriod: null };
+  const state = { user: null, pendingCount: 0, sheet: null, extraRows: {}, sheetFilter: { project: '', activity: '' }, invoicePeriod: null, reportPeriod: null };
 
   /* ================= Hulpfuncties ================= */
 
@@ -333,6 +333,84 @@
     return rows;
   }
 
+  // Budget per regel: activiteitbudget, of projectbudget bij projecten zonder activiteiten.
+  // Verbruik = alle eerdere uren (van iedereen) + wat er nu deze week van jou staat, zodat het live meeloopt.
+  function weekHours(pid, aid) {
+    return [...state.sheet.map.values()]
+      .filter((e) => e.project_id === pid && (aid === null || (e.activity_id || 0) === aid))
+      .reduce((s, e) => s + e.hours, 0);
+  }
+  function prepareBudgets(data) {
+    for (const p of data.projects) {
+      p.baseUsed = (p.used_hours || 0) - weekHours(p.id, null);
+      for (const a of p.activities || []) a.baseUsed = (a.used_hours || 0) - weekHours(p.id, a.id);
+    }
+  }
+  function budgetInfo(pid, aid) {
+    const p = projectOf(pid);
+    if (!p) return null;
+    const a = activityOf(p, aid);
+    let budget;
+    let used;
+    if (a) {
+      budget = a.budget_hours;
+      used = (a.baseUsed || 0) + weekHours(pid, aid);
+    } else if (!(p.activities || []).length) {
+      budget = p.budget_hours;
+      used = (p.baseUsed || 0) + weekHours(pid, null);
+    }
+    if (!budget) return null;
+    const ratio = used / budget;
+    return {
+      text: `${fh(used)} / ${fh(budget)} uur`,
+      cls: ratio > 1 ? 'over' : ratio >= 0.9 ? 'warn' : '',
+      title: ratio > 1 ? `Budget met ${fh(used - budget)} uur overschreden` : `Nog ${fh(budget - used)} uur over`,
+    };
+  }
+  const budgetSlot = (key) => `<span class="budget" data-budget="${key}" hidden></span>`;
+
+  // Filter op project en/of activiteit (activiteit werkt ook over projecten heen).
+  function filterActive() {
+    const f = state.sheetFilter;
+    return Boolean(f.project || f.activity);
+  }
+  function visibleRows(data) {
+    const f = state.sheetFilter;
+    return sheetRows(data).filter((r) => (!f.project || r.pid === Number(f.project))
+      && (!f.activity || r.aid === Number(f.activity)));
+  }
+
+  function filterHTML(data) {
+    const all = sheetRows(data);
+    const f = state.sheetFilter;
+    if (all.length < 2 && !filterActive()) return '';
+    const projects = [];
+    const seenP = new Set();
+    for (const r of all) {
+      if (!seenP.has(r.pid)) { seenP.add(r.pid); projects.push(r.project); }
+    }
+    const acts = new Map();
+    for (const r of all) {
+      if (r.activity && (!f.project || r.pid === Number(f.project))) acts.set(r.activity.id, r.activity.name);
+    }
+    const shown = visibleRows(data).length;
+    return `
+      <div class="sheet-filter">
+        <label class="field">Project
+          <select data-filter="project">
+            ${opt('', 'Alle projecten', !f.project)}
+            ${projects.map((p) => opt(p.id, `${p.client_name || 'Intern'} / ${p.name}`, String(p.id) === String(f.project))).join('')}
+          </select></label>
+        <label class="field">Activiteit
+          <select data-filter="activity"${acts.size ? '' : ' disabled'}>
+            ${opt('', acts.size ? 'Alle activiteiten' : 'Geen activiteiten', !f.activity)}
+            ${[...acts.entries()].sort((x, y) => x[1].localeCompare(y[1], 'nl')).map(([id, name]) => opt(id, name, String(id) === String(f.activity))).join('')}
+          </select></label>
+        ${filterActive() ? `<div class="sheet-filter-info"><span class="muted small">${shown} van ${all.length} regels</span>
+          <button type="button" class="btn small ghost" data-filter-clear>Filter wissen</button></div>` : ''}
+      </div>`;
+  }
+
   // Combinaties die je nog kunt toevoegen.
   function addableRows(data) {
     const shown = new Set(sheetRows(data).map((r) => r.key));
@@ -353,6 +431,7 @@
     const data = await api(`/timesheet?week=${weekStart(requested)}`);
     data.map = new Map(data.entries.map((e) => [entryKey(e), e]));
     state.sheet = data;
+    prepareBudgets(data);
 
     view.innerHTML = '<div id="sheet-head"></div><div id="sheet-notices"></div><div id="sheet-body"></div>';
 
@@ -373,7 +452,16 @@
     view.addEventListener('change', (e) => {
       if (e.target.matches('input.hrs')) saveCell(view, e.target);
       if (e.target.matches('.list-entry [data-field]')) saveListRow(view, e.target.closest('li'));
-      if (e.target.matches('#list-add select[name="project"]')) fillActivitySelect(e.target.form);
+      if (e.target.matches('select[data-filter]')) {
+        state.sheetFilter[e.target.dataset.filter] = e.target.value;
+        if (e.target.dataset.filter === 'project' && state.sheetFilter.activity) {
+          // Activiteit die niet bij het gekozen project hoort, loslaten.
+          const ok = sheetRows(state.sheet).some((r) => r.aid === Number(state.sheetFilter.activity)
+            && (!state.sheetFilter.project || r.pid === Number(state.sheetFilter.project)));
+          if (!ok) state.sheetFilter.activity = '';
+        }
+        renderSheetBody(view);
+      }
     });
     view.addEventListener('input', (e) => {
       if (e.target.matches('.le-desc-input')) autoGrow(e.target);
@@ -409,7 +497,7 @@
       if (grip && e.button === 0) startDrag(view, grip, e);
     });
     view.addEventListener('submit', (e) => {
-      if (e.target.id !== 'list-add') return;
+      if (!e.target.matches('form.list-quick')) return;
       e.preventDefault();
       addListEntry(view, e.target);
     });
@@ -424,6 +512,10 @@
         renderSheetBody(view);
       }
       if (e.target.closest('[data-add-row]')) openAddRow(view);
+      if (e.target.closest('[data-filter-clear]')) {
+        state.sheetFilter = { project: '', activity: '' };
+        renderSheetBody(view);
+      }
       const edit = e.target.closest('[data-list-edit]');
       if (edit) editListEntry(view, edit.closest('li').dataset.key);
       const del = e.target.closest('[data-list-delete]');
@@ -433,7 +525,7 @@
 
   function renderSheetBody(view) {
     const body = view.querySelector('#sheet-body');
-    body.innerHTML = sheetMode() === 'list' ? listHTML(state.sheet) : gridHTML(state.sheet);
+    body.innerHTML = filterHTML(state.sheet) + (sheetMode() === 'list' ? listHTML(state.sheet) : gridHTML(state.sheet));
     body.querySelectorAll('.le-desc-input').forEach(autoGrow);
     refreshSheetChrome(view);
   }
@@ -447,7 +539,7 @@
 
   function gridHTML(data) {
     const today = todayIso();
-    const rows = sheetRows(data);
+    const rows = visibleRows(data);
     const head = data.days.map((d, i) => {
       const cls = [i >= 5 ? 'weekend' : '', d === today ? 'today' : ''].join(' ').trim();
       return `<th class="${cls}" scope="col"><span>${DAYS[i]}</span><span class="dnum">${Number(d.slice(8))}</span></th>`;
@@ -478,11 +570,12 @@
             <span class="name">${esc(p.name)}</span>
             ${r.activity ? `<span class="act">${esc(r.activity.name)}</span>` : ''}
             ${p.billable ? '' : '<span class="tag">Niet declarabel</span>'}
+            ${budgetSlot(r.key)}
           </th>
           ${cells}
           <td class="rowtotal" data-rowtotal></td>
         </tr>`;
-    }).join('') || `<tr><td class="empty-row" colspan="9">Voeg een regel toe om uren te schrijven.</td></tr>`;
+    }).join('') || `<tr><td class="empty-row" colspan="9">${filterActive() ? 'Geen regels voor dit filter.' : 'Voeg een regel toe om uren te schrijven.'}</td></tr>`;
 
     const foot = data.days.map((d, i) => `<td class="coltotal${i >= 5 ? ' weekend' : ''}" data-coltotal="${d}"></td>`).join('');
     const canAdd = addableRows(data).length > 0;
@@ -492,7 +585,7 @@
         <table class="grid">
           <thead><tr><th class="proj" scope="col">Project</th>${head}<th class="rowtotal" scope="col">Totaal</th></tr></thead>
           <tbody>${body}</tbody>
-          <tfoot><tr><td class="proj muted">Per dag</td>${foot}<td class="rowtotal" data-weektotal></td></tr></tfoot>
+          <tfoot><tr><td class="proj muted">${filterActive() ? 'Per dag, gefilterd' : 'Per dag'}</td>${foot}<td class="rowtotal" data-weektotal></td></tr></tfoot>
         </table>
       </div>
       ${canAdd ? '<div class="add-row-bar"><button class="btn" type="button" data-add-row>Regel toevoegen</button></div>' : ''}
@@ -553,44 +646,34 @@
     form.activity.disabled = !(p && activeActivities(p).length);
   }
 
+  // Lijst: dezelfde regels als het raster (toegewezen projecten × activiteiten), elk als kaart met
+  // de uren van deze week en een invulregel.
   function listHTML(data) {
     const today = todayIso();
     const draft = state.listDraft || {};
     const defDay = data.days.includes(draft.date) ? draft.date : (data.days.includes(today) ? today : data.days[0]);
-    const defProject = data.projects.some((p) => p.id === draft.project && p.active)
-      ? draft.project : (data.projects.find((p) => p.active) || {}).id;
-    const defProj = data.projects.find((p) => p.id === defProject);
-    const canAdd = Boolean(defProj);
-
-    const form = canAdd ? `
-      <form class="panel list-add" id="list-add" autocomplete="off">
-        <label class="field">Dag<select name="date">${dayOptions(data, defDay)}</select></label>
-        <label class="field">Project<select name="project">${projectOptions(data, defProject)}</select></label>
-        <label class="field">Activiteit<select name="activity"${activeActivities(defProj).length ? '' : ' disabled'}>${activityOptions(defProj, draft.activity)}</select></label>
-        <label class="field">Uren<input name="hours" inputmode="decimal" placeholder="7,5" required></label>
-        <label class="field grow">Omschrijving<input name="description" maxlength="1000" placeholder="Wat heb je gedaan?"></label>
-        <button class="btn primary" type="submit">Toevoegen</button>
-      </form>` : '';
-
-    const entries = [...data.map.values()].sort((x, y) => x.work_date.localeCompare(y.work_date)
-      || rowLabel(x.project_id, x.activity_id).localeCompare(rowLabel(y.project_id, y.activity_id), 'nl'));
-
-    if (!entries.length) {
-      return `${form}<div class="panel empty"><h2>Nog geen uren deze week</h2><p>Vul hierboven je eerste regel in.</p></div>`;
+    const rows = visibleRows(data);
+    if (!rows.length) {
+      return filterActive()
+        ? '<div class="panel empty"><h2>Geen regels voor dit filter</h2><p>Kies een ander project of een andere activiteit, of wis het filter.</p></div>'
+        : '<div class="panel empty"><h2>Geen projecten deze week</h2><p>Je bent niet aan een actief project toegewezen.</p></div>';
     }
 
-    const days = data.days.filter((d) => entries.some((e) => e.work_date === d)).map((d) => {
-      const list = entries.filter((e) => e.work_date === d);
-      const total = list.reduce((s, e) => s + e.hours, 0);
-      const items = list.map((e) => {
-        const p = projectOf(e.project_id);
-        const a = activityOf(p, e.activity_id);
-        const editable = EDITABLE.includes(e.status) && p.active && (!a || a.active);
+    return rows.map((r) => {
+      const p = r.project;
+      const a = r.activity;
+      const rowEditable = p.active && (!a || a.active);
+      const entries = [...data.map.values()]
+        .filter((e) => e.project_id === r.pid && (e.activity_id || 0) === r.aid)
+        .sort((x, y) => x.work_date.localeCompare(y.work_date));
+      const total = entries.reduce((s, e) => s + e.hours, 0);
+
+      const items = entries.map((e) => {
+        const editable = EDITABLE.includes(e.status) && rowEditable;
         return `
           <li class="list-entry s-${e.status}${editable ? ' editable' : ''}" data-key="${entryKey(e)}">
             <div class="le-main">
-              <span class="client">${esc(p.client_name || 'Intern')}${p.billable ? '' : ', niet declarabel'}</span>
-              <span class="name">${esc(p.name)}</span>${a ? `<span class="le-act">${esc(a.name)}</span>` : ''}
+              <span class="le-date">${dayLabel(e.work_date)}</span>
               ${editable
                 ? `<textarea class="le-desc-input" data-field="description" rows="1" maxlength="1000"
                      placeholder="Wat heb je gedaan?" aria-label="Omschrijving ${esc(rowLabel(e.project_id, e.activity_id))}, ${dayLabel(e.work_date)}">${esc(e.description)}</textarea>`
@@ -608,14 +691,30 @@
             </div>
           </li>`;
       }).join('');
+
+      const quick = rowEditable ? `
+        <form class="list-quick" data-row="${r.key}" autocomplete="off">
+          <select name="date" aria-label="Dag">${dayOptions(data, defDay)}</select>
+          <input name="hours" inputmode="decimal" placeholder="Uren" aria-label="Uren" required>
+          <input name="description" maxlength="1000" placeholder="Wat heb je gedaan?" aria-label="Omschrijving">
+          <button class="btn primary" type="submit">Toevoegen</button>
+        </form>` : '';
+
       return `
-        <section class="panel list-day">
-          <header><h3>${dayLabel(d)}</h3><span class="muted" data-daytotal="${d}">${fh(total)} uur</span></header>
-          <ul class="list-entries">${items}</ul>
+        <section class="panel list-card" data-card="${r.key}">
+          <header>
+            <div>
+              <span class="client">${esc(p.client_name || 'Intern')}${p.billable ? '' : ', niet declarabel'}</span>
+              <h3>${esc(p.name)}</h3>
+              ${a ? `<span class="le-act">${esc(a.name)}</span>` : ''}
+              ${budgetSlot(r.key)}
+            </div>
+            <span class="muted nowrap" data-cardtotal="${r.key}">${total ? `${fh(total)} uur` : ''}</span>
+          </header>
+          ${items ? `<ul class="list-entries">${items}</ul>` : ''}
+          ${quick}
         </section>`;
     }).join('');
-
-    return `${form}${days}`;
   }
 
   // Zet uren op een vak; staat er al iets, dan tellen we op en voegen we de omschrijvingen samen.
@@ -643,11 +742,11 @@
   }
 
   async function addListEntry(view, form) {
-    const pid = Number(form.project.value);
-    const aid = Number(form.activity.value) || 0;
+    const rk = form.dataset.row;
+    const { pid, aid } = parseKey(rk);
     const date = form.date.value;
     const hours = parseHours(form.hours.value);
-    state.listDraft = { date, project: pid, activity: aid };
+    state.listDraft = { date };
     if (!hours || Number.isNaN(hours) || hours < 0 || hours > 24) {
       toast('Vul een aantal uren in tussen 0 en 24, bijvoorbeeld 7,5 of 7:30', true);
       form.hours.focus();
@@ -657,7 +756,7 @@
       const { existing } = await addToCell(pid, aid, date, hours, form.description.value.trim());
       renderSheetBody(view);
       toast(existing ? `Opgeteld bij de ${fh(existing.hours)} uur die er al stond` : `${fh(hours)} uur toegevoegd`);
-      const again = view.querySelector('#list-add input[name="hours"]');
+      const again = view.querySelector(`form.list-quick[data-row="${rk}"] input[name="hours"]`);
       if (again) again.focus();
     } catch (e) {
       toast(e.message, true);
@@ -707,10 +806,13 @@
       const badge = li.querySelector('.le-status .badge');
       if (badge) badge.outerHTML = statusBadge(res.status);
       if (res.status !== 'rejected') { const r = li.querySelector('.le-reject'); if (r) r.remove(); }
-      const dayEl = view.querySelector(`[data-daytotal="${entry.work_date}"]`);
-      if (dayEl) {
-        const sum = [...state.sheet.map.values()].filter((x) => x.work_date === entry.work_date).reduce((s, x) => s + x.hours, 0);
-        dayEl.textContent = `${fh(sum)} uur`;
+      const rk = rowKey(entry.project_id, entry.activity_id);
+      const totalEl = view.querySelector(`[data-cardtotal="${rk}"]`);
+      if (totalEl) {
+        const sum = [...state.sheet.map.values()]
+          .filter((x) => x.project_id === entry.project_id && (x.activity_id || 0) === (entry.activity_id || 0))
+          .reduce((s, x) => s + x.hours, 0);
+        totalEl.textContent = sum ? `${fh(sum)} uur` : '';
       }
       refreshSheetChrome(view);
       const saved = li.querySelector('.le-saved');
@@ -820,6 +922,17 @@
          </div>`
       : '';
 
+    for (const el of view.querySelectorAll('[data-budget]')) {
+      const { pid, aid } = parseKey(el.dataset.budget);
+      const info = budgetInfo(pid, aid);
+      el.hidden = !info;
+      if (info) {
+        el.textContent = `Budget ${info.text}`;
+        el.className = `budget${info.cls ? ` ${info.cls}` : ''}`;
+        el.title = info.title;
+      }
+    }
+
     if (!view.querySelector('table.grid')) return;
     let week = 0;
     for (const tr of view.querySelectorAll('tbody tr[data-row]')) {
@@ -828,8 +941,9 @@
       tr.querySelector('[data-rowtotal]').textContent = sum ? fh(sum) : '';
       week += sum;
     }
+    const visible = [...view.querySelectorAll('tbody tr[data-row]')].map((tr) => parseKey(tr.dataset.row));
     for (const d of data.days) {
-      const sum = [...data.map.values()].filter((e) => e.work_date === d).reduce((s, e) => s + e.hours, 0);
+      const sum = visible.reduce((s, { pid, aid }) => s + ((data.map.get(cellKey(pid, aid, d)) || {}).hours || 0), 0);
       const td = view.querySelector(`[data-coltotal="${d}"]`);
       td.textContent = sum ? fh(sum) : '';
       td.classList.toggle('over', sum > 12);
@@ -1320,6 +1434,19 @@
             <thead><tr><th>Medewerker</th><th class="num">Geschreven</th><th class="num">Declarabel</th><th class="num">Beschikbaar</th><th>Bezetting</th><th class="num">Nog in te dienen</th><th class="num">Te beoordelen</th></tr></thead>
             <tbody>${users}</tbody></table></div>
         </section>
+        ${r.byActivity && r.byActivity.length ? `<section class="panel">
+          <div class="panel-pad"><h2>Budgetten per activiteit</h2>
+            <p class="muted small">Verbruik telt alle uren sinds de start, van alle medewerkers. Het bedrag telt alleen goedgekeurde en gefactureerde uren.</p></div>
+          <div class="table-wrap"><table class="data">
+            <thead><tr><th>Klant / project / activiteit</th><th class="num">Uren in periode</th><th>Budget uren</th><th>Budget €</th></tr></thead>
+            <tbody>${r.byActivity.map((x) => `
+              <tr>
+                <td>${esc(x.client_name || 'Intern')} / ${esc(x.project_name)}<br><span class="muted small">${esc(x.activity_name)}</span>${x.active ? '' : ' <span class="muted small">(afgesloten)</span>'}</td>
+                <td class="num">${fh(x.hours)}</td>
+                <td>${x.budget_hours ? `<div class="row" style="flex-wrap:nowrap">${bar(x.hours_all_time / x.budget_hours)}<span class="nowrap">${fh(x.hours_all_time)} / ${fh(x.budget_hours)}</span></div>` : '<span class="muted">–</span>'}</td>
+                <td>${x.budget_amount ? `<div class="row" style="flex-wrap:nowrap">${bar(x.value_all_time / x.budget_amount)}<span class="nowrap">${eur(x.value_all_time)} / ${eur(x.budget_amount)}</span></div>` : '<span class="muted">–</span>'}</td>
+              </tr>`).join('')}</tbody></table></div>
+        </section>` : ''}
         <section class="panel">
           <div class="panel-pad"><h2>Projecten</h2>
             <p class="muted small">Het budget telt alle geschreven uren sinds de start van het project.</p></div>
@@ -1577,7 +1704,7 @@
               <td>${esc(p.client_name || 'Intern')} / ${esc(p.name)}${p.billable ? '' : ' <span class="muted small">(niet declarabel)</span>'}</td>
               <td>${esc(p.code || '')}</td>
               <td class="num">${!p.billable ? '–' : (p.default_rate ? eur(p.default_rate) : (p.activity_count ? '<span class="muted">Per activiteit</span>' : '<span class="badge submitted">Tarief ontbreekt</span>'))}</td>
-              <td class="num">${p.budget_hours ? fh(p.budget_hours) : ''}</td>
+              <td class="num">${p.budget_hours ? fh(p.budget_hours) : (p.activity_budget_hours ? `<span title="Som van de activiteitbudgetten">${fh(p.activity_budget_hours)}</span>` : '')}</td>
               <td class="num">${fh(p.hours_total)}</td>
               <td class="num">${p.activity_count || ''}</td>
               <td class="num">${p.member_count}</td>
@@ -1915,14 +2042,17 @@
       title: `Activiteiten van ${project.name}`,
       wide: true,
       body: `
-        <p class="muted small">Medewerkers kiezen bij dit project een van de aangevinkte activiteiten. Een afwijkend tarief geldt alleen voor dit project; leeg laten betekent het standaardtarief van de activiteit.</p>
-        ${list.length ? `<div class="table-wrap"><table class="data">
-          <thead><tr><th>Activiteit</th><th class="num">Standaard</th><th>Afwijkend tarief (€)</th></tr></thead>
+        <p class="muted small">Medewerkers kiezen bij dit project een van de aangevinkte activiteiten. Een afwijkend tarief geldt alleen voor dit project; leeg laten betekent het standaardtarief van de activiteit. Budgetten zijn optioneel, in uren en/of in euro's excl. btw.</p>
+        ${list.length ? `<div class="table-wrap"><table class="data act-table">
+          <thead><tr><th>Activiteit</th><th class="num">Standaard</th><th>Afwijkend tarief (€)</th><th>Budget (uren)</th><th>Budget (€)</th><th class="num">Verbruikt</th></tr></thead>
           <tbody>${list.map((a) => `
             <tr>
               <td><label class="check"><input type="checkbox" name="a${a.activity_id}"${a.linked ? ' checked' : ''}> ${esc(a.name)}${a.active ? '' : ' <span class="muted small">(inactief)</span>'}</label></td>
               <td class="num">${a.default_rate === null ? '–' : eur(a.default_rate)}</td>
-              <td><input name="r${a.activity_id}" inputmode="decimal" value="${fmtInput(a.rate)}" placeholder="${String(fallback(a) ?? '').replace('.', ',')}" size="8" aria-label="Tarief ${esc(a.name)}"></td>
+              <td><input name="r${a.activity_id}" inputmode="decimal" value="${fmtInput(a.rate)}" placeholder="${String(fallback(a) ?? '').replace('.', ',')}" size="7" aria-label="Tarief ${esc(a.name)}"></td>
+              <td><input name="bh${a.activity_id}" inputmode="decimal" value="${fmtInput(a.budget_hours)}" size="7" aria-label="Budget uren ${esc(a.name)}"></td>
+              <td><input name="ba${a.activity_id}" inputmode="decimal" value="${fmtInput(a.budget_amount)}" size="9" aria-label="Budget euro ${esc(a.name)}"></td>
+              <td class="num nowrap">${a.used_hours ? `${fh(a.used_hours)} uur${a.used_amount ? `<br><span class="muted small">${eur(a.used_amount)}</span>` : ''}` : ''}</td>
             </tr>`).join('')}</tbody>
         </table></div>` : '<p class="muted">Er zijn nog geen activiteiten. Voeg er hieronder een toe of importeer ze onder Beheer › Activiteiten.</p>'}
         <div class="form-grid">
@@ -1933,8 +2063,13 @@
         for (const a of list) {
           const want = fd.get(`a${a.activity_id}`) === 'on';
           const rate = numOrNull(fd.get(`r${a.activity_id}`));
-          if (want && (!a.linked || rate !== a.rate)) {
-            await api(`/admin/projects/${project.id}/activities/${a.activity_id}`, { method: 'PUT', body: { rate } });
+          const budgetHours = numOrNull(fd.get(`bh${a.activity_id}`));
+          const budgetAmount = numOrNull(fd.get(`ba${a.activity_id}`));
+          const changed = rate !== a.rate || budgetHours !== a.budget_hours || budgetAmount !== a.budget_amount;
+          if (want && (!a.linked || changed)) {
+            await api(`/admin/projects/${project.id}/activities/${a.activity_id}`, {
+              method: 'PUT', body: { rate, budget_hours: budgetHours, budget_amount: budgetAmount },
+            });
           } else if (!want && a.linked) {
             await api(`/admin/projects/${project.id}/activities/${a.activity_id}`, { method: 'DELETE' });
           }

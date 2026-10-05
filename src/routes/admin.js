@@ -166,6 +166,7 @@ r.get('/projects', ah(async (req, res) => {
     `SELECT p.*, c.name AS client_name,
             (SELECT count(*)::int FROM assignments a WHERE a.project_id = p.id) AS member_count,
             (SELECT count(*)::int FROM project_activities pa WHERE pa.project_id = p.id) AS activity_count,
+            (SELECT sum(pa.budget_hours) FROM project_activities pa WHERE pa.project_id = p.id) AS activity_budget_hours,
             (SELECT coalesce(sum(e.hours), 0) FROM time_entries e WHERE e.project_id = p.id) AS hours_total
        FROM projects p LEFT JOIN clients c ON c.id = p.client_id
       ORDER BY p.active DESC, c.name NULLS LAST, p.name`
@@ -358,7 +359,11 @@ r.post('/activities/import', ah(async (req, res) => {
 
 r.get('/projects/:id/activities', ah(async (req, res) => {
   const { rows } = await query(
-    `SELECT a.id AS activity_id, a.name, a.default_rate, a.active, pa.rate, (pa.activity_id IS NOT NULL) AS linked
+    `SELECT a.id AS activity_id, a.name, a.default_rate, a.active, pa.rate, pa.budget_hours, pa.budget_amount,
+            (pa.activity_id IS NOT NULL) AS linked,
+            (SELECT coalesce(sum(e.hours), 0) FROM time_entries e WHERE e.project_id = $1 AND e.activity_id = a.id) AS used_hours,
+            (SELECT coalesce(sum(e.hours * e.rate), 0) FROM time_entries e
+              WHERE e.project_id = $1 AND e.activity_id = a.id AND e.status IN ('approved', 'invoiced')) AS used_amount
        FROM activities a
        LEFT JOIN project_activities pa ON pa.activity_id = a.id AND pa.project_id = $1
       WHERE a.active OR pa.activity_id IS NOT NULL
@@ -370,10 +375,13 @@ r.get('/projects/:id/activities', ah(async (req, res) => {
 
 r.put('/projects/:id/activities/:activityId', ah(async (req, res) => {
   const rate = num(req.body.rate, { min: 0, max: 10000, name: 'tarief', allowNull: true });
+  const budgetHours = num(req.body.budget_hours, { min: 0, max: 1000000, name: 'budget in uren', allowNull: true });
+  const budgetAmount = num(req.body.budget_amount, { min: 0, max: 100000000, name: 'budget in euro', allowNull: true });
   await query(
-    `INSERT INTO project_activities (project_id, activity_id, rate) VALUES ($1, $2, $3)
-     ON CONFLICT (project_id, activity_id) DO UPDATE SET rate = EXCLUDED.rate`,
-    [intParam(req.params.id), intParam(req.params.activityId), rate]
+    `INSERT INTO project_activities (project_id, activity_id, rate, budget_hours, budget_amount) VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (project_id, activity_id) DO UPDATE
+        SET rate = EXCLUDED.rate, budget_hours = EXCLUDED.budget_hours, budget_amount = EXCLUDED.budget_amount`,
+    [intParam(req.params.id), intParam(req.params.activityId), rate, budgetHours, budgetAmount]
   );
   res.json({ ok: true });
 }));

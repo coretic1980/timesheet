@@ -13,7 +13,7 @@ r.get('/', ah(async (req, res) => {
   const uid = req.user.id;
 
   const projects = (await query(
-    `SELECT p.id, p.name, p.code, p.billable, p.active, c.name AS client_name,
+    `SELECT p.id, p.name, p.code, p.billable, p.active, p.budget_hours, c.name AS client_name,
             EXISTS (SELECT 1 FROM assignments a WHERE a.project_id = p.id AND a.user_id = $1) AS assigned
        FROM projects p LEFT JOIN clients c ON c.id = p.client_id
       WHERE (p.active AND EXISTS (SELECT 1 FROM assignments a WHERE a.project_id = p.id AND a.user_id = $1))
@@ -30,7 +30,7 @@ r.get('/', ah(async (req, res) => {
   // Activiteiten per project; ook activiteiten die niet meer gekoppeld zijn maar deze week wel gebruikt.
   const ids = projects.map((p) => p.id);
   const linked = ids.length ? (await query(
-    `SELECT pa.project_id, a.id, a.name, a.active
+    `SELECT pa.project_id, a.id, a.name, a.active, pa.budget_hours
        FROM project_activities pa JOIN activities a ON a.id = pa.activity_id
       WHERE pa.project_id = ANY($1)
       ORDER BY a.name`,
@@ -40,13 +40,26 @@ r.get('/', ah(async (req, res) => {
   const used = usedIds.length
     ? (await query('SELECT id, name FROM activities WHERE id = ANY($1)', [usedIds])).rows : [];
   for (const p of projects) {
-    p.activities = linked.filter((a) => a.project_id === p.id).map(({ id, name, active }) => ({ id, name, active }));
+    p.activities = linked.filter((a) => a.project_id === p.id)
+      .map(({ id, name, active, budget_hours: budgetHours }) => ({ id, name, active, budget_hours: budgetHours }));
     for (const e of entries.filter((x) => x.project_id === p.id && x.activity_id)) {
       if (!p.activities.some((a) => a.id === e.activity_id)) {
         const a = used.find((x) => x.id === e.activity_id);
         if (a) p.activities.push({ id: a.id, name: a.name, active: false });
       }
     }
+  }
+
+  // Verbruik (alle medewerkers, alle tijd) voor de budgetweergave per regel.
+  const usage = ids.length ? (await query(
+    `SELECT project_id, COALESCE(activity_id, 0) AS activity_id, sum(hours) AS used
+       FROM time_entries WHERE project_id = ANY($1) GROUP BY 1, 2`,
+    [ids]
+  )).rows : [];
+  for (const p of projects) {
+    const rows = usage.filter((u) => u.project_id === p.id);
+    p.used_hours = rows.reduce((s, u) => s + u.used, 0);
+    for (const a of p.activities) a.used_hours = (rows.find((u) => u.activity_id === a.id) || {}).used || 0;
   }
 
   // Regels van vorige week, zodat dezelfde project/activiteit-combinaties terugkomen.

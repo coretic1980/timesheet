@@ -67,6 +67,10 @@ CREATE TABLE IF NOT EXISTS project_activities (
   PRIMARY KEY (project_id, activity_id)
 );
 
+-- Budget per activiteit op een project (uren en/of bedrag excl. btw)
+ALTER TABLE project_activities ADD COLUMN IF NOT EXISTS budget_hours NUMERIC(8,2);
+ALTER TABLE project_activities ADD COLUMN IF NOT EXISTS budget_amount NUMERIC(12,2);
+
 CREATE TABLE IF NOT EXISTS invoices (
   id                SERIAL PRIMARY KEY,
   client_id         INT NOT NULL REFERENCES clients(id),

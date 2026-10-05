@@ -54,7 +54,24 @@ r.get('/summary', ah(async (req, res) => {
     [from, to]
   )).rows.map((p) => ({ ...p, value: round2(p.value) }));
 
-  res.json({ from, to, workdays, byUser, byProject });
+  const byActivity = (await query(
+    `SELECT p.id AS project_id, p.name AS project_name, p.active, c.name AS client_name,
+            a.id AS activity_id, a.name AS activity_name, pa.budget_hours, pa.budget_amount,
+            coalesce(sum(e.hours) FILTER (WHERE e.work_date BETWEEN $1 AND $2), 0) AS hours,
+            coalesce(sum(e.hours), 0) AS hours_all_time,
+            coalesce(sum(e.hours * e.rate) FILTER (WHERE e.status IN ('approved', 'invoiced')), 0) AS value_all_time
+       FROM project_activities pa
+       JOIN projects p ON p.id = pa.project_id
+       JOIN activities a ON a.id = pa.activity_id
+       LEFT JOIN clients c ON c.id = p.client_id
+       LEFT JOIN time_entries e ON e.project_id = pa.project_id AND e.activity_id = pa.activity_id
+      WHERE pa.budget_hours IS NOT NULL OR pa.budget_amount IS NOT NULL
+      GROUP BY p.id, c.name, a.id, pa.budget_hours, pa.budget_amount
+      ORDER BY c.name NULLS LAST, p.name, a.name`,
+    [from, to]
+  )).rows.map((x) => ({ ...x, value_all_time: round2(x.value_all_time) }));
+
+  res.json({ from, to, workdays, byUser, byProject, byActivity });
 }));
 
 const STATUS_NL = {
