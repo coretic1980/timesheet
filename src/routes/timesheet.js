@@ -8,8 +8,27 @@ const r = express.Router();
 
 const ENTRY_COLS = 'id, project_id, activity_id, work_date, hours, description, status, rejection_reason';
 
+// Periode uit query/body: { month: 'jjjj-mm' } voor een maand, anders { week: datum } voor een week.
+function periodRange(src) {
+  if (src.month !== undefined && src.month !== null && src.month !== '') {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(src.month))) throw new HttpError(400, 'Ongeldige maand');
+    const start = `${src.month}-01`;
+    const [y, m] = src.month.split('-').map(Number);
+    const end = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+    return { period: 'month', start, end };
+  }
+  const { start, end } = weekRange(src.week || todayIso());
+  return { period: 'week', start, end };
+}
+
+function daysBetween(start, end) {
+  const days = [];
+  for (let d = start; d <= end; d = addDays(d, 1)) days.push(d);
+  return days;
+}
+
 r.get('/', ah(async (req, res) => {
-  const { start, end } = weekRange(req.query.week || todayIso());
+  const { period, start, end } = periodRange(req.query);
   const uid = req.user.id;
 
   const projects = (await query(
@@ -70,9 +89,10 @@ r.get('/', ah(async (req, res) => {
   )).rows;
 
   res.json({
+    period,
     week_start: start,
     week_end: end,
-    days: Array.from({ length: 7 }, (_, i) => addDays(start, i)),
+    days: daysBetween(start, end),
     projects,
     entries,
     recent,
@@ -147,24 +167,24 @@ r.put('/entry', ah(async (req, res) => {
 }));
 
 r.post('/submit', ah(async (req, res) => {
-  const { start, end } = weekRange(req.body.week);
+  const { start, end, period } = periodRange(req.body);
   const { rowCount } = await query(
     `UPDATE time_entries SET status = 'submitted', rejection_reason = NULL, updated_at = now()
       WHERE user_id = $1 AND work_date BETWEEN $2 AND $3 AND status IN ('draft', 'rejected')`,
     [req.user.id, start, end]
   );
-  if (!rowCount) throw new HttpError(400, 'Er zijn deze week geen uren om in te dienen');
+  if (!rowCount) throw new HttpError(400, `Er zijn deze ${period === 'month' ? 'maand' : 'week'} geen uren om in te dienen`);
   res.json({ submitted: rowCount });
 }));
 
 r.post('/recall', ah(async (req, res) => {
-  const { start, end } = weekRange(req.body.week);
+  const { start, end, period } = periodRange(req.body);
   const { rowCount } = await query(
     `UPDATE time_entries SET status = 'draft', updated_at = now()
       WHERE user_id = $1 AND work_date BETWEEN $2 AND $3 AND status = 'submitted'`,
     [req.user.id, start, end]
   );
-  if (!rowCount) throw new HttpError(400, 'Er zijn deze week geen ingediende uren om terug te halen');
+  if (!rowCount) throw new HttpError(400, `Er zijn deze ${period === 'month' ? 'maand' : 'week'} geen ingediende uren om terug te halen`);
   res.json({ recalled: rowCount });
 }));
 

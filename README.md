@@ -9,7 +9,8 @@ Stack: Node 20 + Express, Postgres (Neon) en een frontend zonder build-stap. De 
 **Medewerkers**
 - Weekstaat met een rij per project en een kolom per dag. Invoer als `7,5` of `7:30`.
 - Schakelaar tussen raster en lijst. De lijst toont dezelfde regels als het raster (elk toegewezen project, per activiteit) als kaarten, met de uren van die week en per kaart een invulregel. Uren en omschrijving pas je direct in de lijst aan; ze worden opgeslagen zodra je het veld verlaat of op Enter drukt (Shift+Enter geeft een nieuwe regel, Escape zet de oude waarde terug). De keuze wordt per browser onthouden; op een smal scherm is de lijst de standaard.
-- Filter in raster en lijst op project en/of activiteit. Het activiteitenfilter werkt ook over projecten heen, en het filter blijft staan als je van week wisselt.
+- Week- of maandoverzicht (schakelaar Week | Maand), in raster en lijst. In de maand dien je alle conceptregels van die maand in één keer in.
+- Filter in raster en lijst op meerdere projecten en/of activiteiten tegelijk. Het activiteitenfilter werkt ook over projecten heen, en het filter blijft staan als je van week wisselt.
 - Uren verplaatsen door een vak naar een andere dag of een ander project te slepen. Met Ctrl of ⌥ kopieer je in plaats van te verplaatsen. Staat er al iets in het doelvak, dan worden de uren opgeteld.
 - Per cel een omschrijving.
 - Week indienen, en terughalen zolang de uren nog niet zijn goedgekeurd.

@@ -2,7 +2,7 @@
   'use strict';
 
   const app = document.getElementById('app');
-  const state = { user: null, pendingCount: 0, sheet: null, extraRows: {}, sheetFilter: { project: '', activity: '' }, invoicePeriod: null, reportPeriod: null };
+  const state = { user: null, pendingCount: 0, sheet: null, extraRows: {}, sheetFilter: { projects: [], activities: [] }, invoicePeriod: null, reportPeriod: null };
 
   /* ================= Hulpfuncties ================= */
 
@@ -280,6 +280,27 @@
     try { localStorage.setItem(MODE_KEY, mode); } catch { /* geen opslag beschikbaar */ }
   }
 
+  // Periode: week of maand.
+  const PERIOD_KEY = 'coretic-uren:periode';
+  function sheetPeriod() {
+    if (state.sheetPeriod) return state.sheetPeriod;
+    let stored = null;
+    try { stored = localStorage.getItem(PERIOD_KEY); } catch { /* geen opslag beschikbaar */ }
+    state.sheetPeriod = stored === 'month' ? 'month' : 'week';
+    return state.sheetPeriod;
+  }
+  function setSheetPeriod(p) {
+    state.sheetPeriod = p;
+    try { localStorage.setItem(PERIOD_KEY, p); } catch { /* geen opslag beschikbaar */ }
+  }
+  const MONTHS_LONG = ['januari', 'februari', 'maart', 'april', 'mei', 'juni', 'juli', 'augustus', 'september', 'oktober', 'november', 'december'];
+  function shiftMonth(iso, n) {
+    const [y, m] = iso.split('-').map(Number);
+    const d = new Date(Date.UTC(y, m - 1 + n, 1));
+    return d.toISOString().slice(0, 10);
+  }
+  const workdayCount = (days) => days.filter((d) => dow(d) < 5).length;
+
   // Sleutels. Rij = project|activiteit, vak = project|activiteit|datum. Activiteit 0 = geen activiteit.
   const rowKey = (pid, aid) => `${pid}|${aid || 0}`;
   const cellKey = (pid, aid, date) => `${pid}|${aid || 0}|${date}`;
@@ -369,46 +390,162 @@
   }
   const budgetSlot = (key) => `<span class="budget" data-budget="${key}" hidden></span>`;
 
-  // Filter op project en/of activiteit (activiteit werkt ook over projecten heen).
+  // Filter op projecten en/of activiteiten (meervoudig; activiteit werkt ook over projecten heen).
   function filterActive() {
     const f = state.sheetFilter;
-    return Boolean(f.project || f.activity);
+    return Boolean(f.projects.length || f.activities.length);
   }
   function visibleRows(data) {
     const f = state.sheetFilter;
-    return sheetRows(data).filter((r) => (!f.project || r.pid === Number(f.project))
-      && (!f.activity || r.aid === Number(f.activity)));
+    return sheetRows(data).filter((r) => (!f.projects.length || f.projects.includes(r.pid))
+      && (!f.activities.length || f.activities.includes(r.aid)));
+  }
+
+  // Keuzes per filter: projecten uit alle regels, activiteiten uit de regels van de gekozen projecten.
+  function filterOptions(kind, data) {
+    const all = sheetRows(data);
+    const f = state.sheetFilter;
+    const out = new Map();
+    for (const r of all) {
+      if (kind === 'projects') {
+        if (!out.has(r.pid)) out.set(r.pid, `${r.project.client_name || 'Intern'} / ${r.project.name}`);
+      } else if (r.activity && (!f.projects.length || f.projects.includes(r.pid))) {
+        out.set(r.activity.id, r.activity.name);
+      }
+    }
+    return [...out.entries()].map(([id, label]) => ({ id, label }))
+      .sort((x, y) => x.label.localeCompare(y.label, 'nl'));
+  }
+
+  function msText(kind, data) {
+    const sel = state.sheetFilter[kind];
+    const word = kind === 'projects' ? ['Alle projecten', 'project', 'projecten'] : ['Alle activiteiten', 'activiteit', 'activiteiten'];
+    if (!sel.length) return word[0];
+    if (sel.length === 1) {
+      const o = filterOptions(kind, data).find((x) => x.id === sel[0]);
+      return o ? o.label : `1 ${word[1]}`;
+    }
+    return `${sel.length} ${word[2]}`;
+  }
+
+  function msOptionsHTML(kind, data) {
+    const opts = filterOptions(kind, data);
+    if (!opts.length) return '<p class="muted small ms-empty">Geen keuzes</p>';
+    const sel = state.sheetFilter[kind];
+    return opts.map((o) => `
+      <label class="check ms-option" data-label="${esc(o.label.toLowerCase())}">
+        <input type="checkbox" value="${o.id}"${sel.includes(o.id) ? ' checked' : ''}> <span>${esc(o.label)}</span>
+      </label>`).join('');
+  }
+
+  function msHTML(kind, label, data) {
+    return `
+      <div class="ms" data-ms="${kind}">
+        <span class="ms-label">${label}</span>
+        <button type="button" class="ms-button" aria-haspopup="true" aria-expanded="false">
+          <span data-ms-text>${esc(msText(kind, data))}</span>
+        </button>
+        <div class="ms-panel" hidden>
+          <input type="search" class="ms-search" placeholder="Zoeken" aria-label="Zoeken in ${label.toLowerCase()}">
+          <div class="ms-actions">
+            <button type="button" class="btn small ghost" data-ms-all>Alles selecteren</button>
+            <button type="button" class="btn small ghost" data-ms-none>Wissen</button>
+          </div>
+          <div class="ms-options">${msOptionsHTML(kind, data)}</div>
+        </div>
+      </div>`;
+  }
+
+  function filterInfoHTML(data) {
+    if (!filterActive()) return '';
+    return `<span class="muted small">${visibleRows(data).length} van ${sheetRows(data).length} regels</span>
+      <button type="button" class="btn small ghost" data-filter-clear>Filter wissen</button>`;
   }
 
   function filterHTML(data) {
-    const all = sheetRows(data);
-    const f = state.sheetFilter;
-    if (all.length < 2 && !filterActive()) return '';
-    const projects = [];
-    const seenP = new Set();
-    for (const r of all) {
-      if (!seenP.has(r.pid)) { seenP.add(r.pid); projects.push(r.project); }
-    }
-    const acts = new Map();
-    for (const r of all) {
-      if (r.activity && (!f.project || r.pid === Number(f.project))) acts.set(r.activity.id, r.activity.name);
-    }
-    const shown = visibleRows(data).length;
+    if (sheetRows(data).length < 2 && !filterActive()) return '';
     return `
       <div class="sheet-filter">
-        <label class="field">Project
-          <select data-filter="project">
-            ${opt('', 'Alle projecten', !f.project)}
-            ${projects.map((p) => opt(p.id, `${p.client_name || 'Intern'} / ${p.name}`, String(p.id) === String(f.project))).join('')}
-          </select></label>
-        <label class="field">Activiteit
-          <select data-filter="activity"${acts.size ? '' : ' disabled'}>
-            ${opt('', acts.size ? 'Alle activiteiten' : 'Geen activiteiten', !f.activity)}
-            ${[...acts.entries()].sort((x, y) => x[1].localeCompare(y[1], 'nl')).map(([id, name]) => opt(id, name, String(id) === String(f.activity))).join('')}
-          </select></label>
-        ${filterActive() ? `<div class="sheet-filter-info"><span class="muted small">${shown} van ${all.length} regels</span>
-          <button type="button" class="btn small ghost" data-filter-clear>Filter wissen</button></div>` : ''}
+        ${msHTML('projects', 'Project', data)}
+        ${msHTML('activities', 'Activiteit', data)}
+        <div class="sheet-filter-info" data-filter-info>${filterInfoHTML(data)}</div>
       </div>`;
+  }
+
+  function closeMs(except) {
+    document.querySelectorAll('.ms-panel:not([hidden])').forEach((panel) => {
+      if (panel.closest('.ms') === except) return;
+      panel.hidden = true;
+      panel.closest('.ms').querySelector('.ms-button').setAttribute('aria-expanded', 'false');
+    });
+  }
+  document.addEventListener('click', (e) => { if (!e.target.closest('.ms')) closeMs(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMs(); });
+
+  // Filter toepassen zonder de filterbalk opnieuw op te bouwen, zodat een open menu open blijft.
+  function applyFilter(view, changedKind) {
+    const data = state.sheet;
+    if (changedKind === 'projects') {
+      const allowed = new Set(filterOptions('activities', data).map((o) => o.id));
+      state.sheetFilter.activities = state.sheetFilter.activities.filter((id) => allowed.has(id));
+      const box = view.querySelector('[data-ms="activities"] .ms-options');
+      if (box) box.innerHTML = msOptionsHTML('activities', data);
+    }
+    for (const kind of ['projects', 'activities']) {
+      const t = view.querySelector(`[data-ms="${kind}"] [data-ms-text]`);
+      if (t) t.textContent = msText(kind, data);
+      view.querySelector(`[data-ms="${kind}"]`)?.classList.toggle('active', state.sheetFilter[kind].length > 0);
+    }
+    const info = view.querySelector('[data-filter-info]');
+    if (info) info.innerHTML = filterInfoHTML(data);
+    renderSheetContent(view);
+  }
+
+  function bindFilterEvents(view) {
+    view.addEventListener('click', (e) => {
+      const btn = e.target.closest('.ms-button');
+      if (btn) {
+        const ms = btn.closest('.ms');
+        const panel = ms.querySelector('.ms-panel');
+        closeMs(ms);
+        panel.hidden = !panel.hidden;
+        btn.setAttribute('aria-expanded', String(!panel.hidden));
+        if (!panel.hidden) panel.querySelector('.ms-search').focus();
+        return;
+      }
+      const all = e.target.closest('[data-ms-all]');
+      const none = e.target.closest('[data-ms-none]');
+      if (all || none) {
+        const ms = e.target.closest('.ms');
+        const kind = ms.dataset.ms;
+        if (none) state.sheetFilter[kind] = [];
+        else {
+          const ids = [...ms.querySelectorAll('.ms-option:not([hidden]) input')].map((i) => Number(i.value));
+          state.sheetFilter[kind] = [...new Set([...state.sheetFilter[kind], ...ids])];
+        }
+        ms.querySelectorAll('.ms-option input').forEach((i) => { i.checked = state.sheetFilter[kind].includes(Number(i.value)); });
+        applyFilter(view, kind);
+      }
+      if (e.target.closest('[data-filter-clear]')) {
+        state.sheetFilter = { projects: [], activities: [] };
+        renderSheetBody(view);
+      }
+    });
+    view.addEventListener('change', (e) => {
+      const cb = e.target.closest('.ms-option input');
+      if (!cb) return;
+      const kind = cb.closest('.ms').dataset.ms;
+      const id = Number(cb.value);
+      const list = state.sheetFilter[kind].filter((x) => x !== id);
+      if (cb.checked) list.push(id);
+      state.sheetFilter[kind] = list;
+      applyFilter(view, kind);
+    });
+    view.addEventListener('input', (e) => {
+      if (!e.target.matches('.ms-search')) return;
+      const q = e.target.value.trim().toLowerCase();
+      e.target.closest('.ms').querySelectorAll('.ms-option').forEach((o) => { o.hidden = Boolean(q) && !o.dataset.label.includes(q); });
+    });
   }
 
   // Combinaties die je nog kunt toevoegen.
@@ -428,7 +565,10 @@
 
   async function viewTimesheet(view, params) {
     const requested = /^\d{4}-\d{2}-\d{2}$/.test(params[0] || '') ? params[0] : todayIso();
-    const data = await api(`/timesheet?week=${weekStart(requested)}`);
+    const data = await api(sheetPeriod() === 'month'
+      ? `/timesheet?month=${requested.slice(0, 7)}`
+      : `/timesheet?week=${weekStart(requested)}`);
+    data.period = data.period || 'week';
     data.map = new Map(data.entries.map((e) => [entryKey(e), e]));
     state.sheet = data;
     prepareBudgets(data);
@@ -448,20 +588,11 @@
     }
 
     renderSheetBody(view);
+    bindFilterEvents(view);
 
     view.addEventListener('change', (e) => {
       if (e.target.matches('input.hrs')) saveCell(view, e.target);
       if (e.target.matches('.list-entry [data-field]')) saveListRow(view, e.target.closest('li'));
-      if (e.target.matches('select[data-filter]')) {
-        state.sheetFilter[e.target.dataset.filter] = e.target.value;
-        if (e.target.dataset.filter === 'project' && state.sheetFilter.activity) {
-          // Activiteit die niet bij het gekozen project hoort, loslaten.
-          const ok = sheetRows(state.sheet).some((r) => r.aid === Number(state.sheetFilter.activity)
-            && (!state.sheetFilter.project || r.pid === Number(state.sheetFilter.project)));
-          if (!ok) state.sheetFilter.activity = '';
-        }
-        renderSheetBody(view);
-      }
     });
     view.addEventListener('input', (e) => {
       if (e.target.matches('.le-desc-input')) autoGrow(e.target);
@@ -506,16 +637,21 @@
       if (note) openNote(view, note.closest('tr').dataset.row, note.dataset.date);
       const act = e.target.closest('[data-sheet-action]');
       if (act) sheetAction(view, act.dataset.sheetAction);
+      const per = e.target.closest('[data-sheet-period]');
+      if (per && per.dataset.sheetPeriod !== sheetPeriod()) {
+        setSheetPeriod(per.dataset.sheetPeriod);
+        // Zelfde dag blijven tonen: vandaag als die in de periode valt, anders het begin.
+        const t = todayIso();
+        const anchor = state.sheet.days.includes(t) ? t : state.sheet.week_start;
+        if (location.hash === `#/uren/${anchor}`) render(); else location.hash = `#/uren/${anchor}`;
+        return;
+      }
       const mode = e.target.closest('[data-sheet-mode]');
       if (mode && mode.dataset.sheetMode !== sheetMode()) {
         setSheetMode(mode.dataset.sheetMode);
         renderSheetBody(view);
       }
       if (e.target.closest('[data-add-row]')) openAddRow(view);
-      if (e.target.closest('[data-filter-clear]')) {
-        state.sheetFilter = { project: '', activity: '' };
-        renderSheetBody(view);
-      }
       const edit = e.target.closest('[data-list-edit]');
       if (edit) editListEntry(view, edit.closest('li').dataset.key);
       const del = e.target.closest('[data-list-delete]');
@@ -525,8 +661,17 @@
 
   function renderSheetBody(view) {
     const body = view.querySelector('#sheet-body');
-    body.innerHTML = filterHTML(state.sheet) + (sheetMode() === 'list' ? listHTML(state.sheet) : gridHTML(state.sheet));
-    body.querySelectorAll('.le-desc-input').forEach(autoGrow);
+    body.innerHTML = `${filterHTML(state.sheet)}<div id="sheet-content"></div>`;
+    for (const kind of ['projects', 'activities']) {
+      view.querySelector(`[data-ms="${kind}"]`)?.classList.toggle('active', state.sheetFilter[kind].length > 0);
+    }
+    renderSheetContent(view);
+  }
+
+  function renderSheetContent(view) {
+    const box = view.querySelector('#sheet-content');
+    box.innerHTML = sheetMode() === 'list' ? listHTML(state.sheet) : gridHTML(state.sheet);
+    box.querySelectorAll('.le-desc-input').forEach(autoGrow);
     refreshSheetChrome(view);
   }
 
@@ -541,8 +686,8 @@
     const today = todayIso();
     const rows = visibleRows(data);
     const head = data.days.map((d, i) => {
-      const cls = [i >= 5 ? 'weekend' : '', d === today ? 'today' : ''].join(' ').trim();
-      return `<th class="${cls}" scope="col"><span>${DAYS[i]}</span><span class="dnum">${Number(d.slice(8))}</span></th>`;
+      const cls = [dow(d) >= 5 ? 'weekend' : '', d === today ? 'today' : ''].join(' ').trim();
+      return `<th class="${cls}" scope="col"><span>${DAYS[dow(d)]}</span><span class="dnum">${Number(d.slice(8))}</span></th>`;
     }).join('');
 
     const body = rows.map((r) => {
@@ -553,12 +698,12 @@
         const locked = (e && !EDITABLE.includes(e.status)) || rowLocked;
         const label = rowLabel(r.pid, r.aid);
         return `
-          <td class="cell${i >= 5 ? ' weekend' : ''}${e ? ` s-${e.status}` : ''}" data-date="${d}">
+          <td class="cell${dow(d) >= 5 ? ' weekend' : ''}${e ? ` s-${e.status}` : ''}" data-date="${d}">
             <input class="hrs" inputmode="decimal" autocomplete="off" data-date="${d}"
-              aria-label="${esc(label)}, ${DAYS_LONG[i]} ${fmtDate(d)}"
+              aria-label="${esc(label)}, ${DAYS_LONG[dow(d)]} ${fmtDate(d)}"
               value="${fmtInput(e && e.hours)}"${locked ? ' disabled' : ''}>
             <button type="button" class="note${e && e.description ? ' has' : ''}" data-date="${d}"
-              aria-label="Omschrijving bij ${esc(label)}, ${DAYS_LONG[i]}"
+              aria-label="Omschrijving bij ${esc(label)}, ${DAYS_LONG[dow(d)]}"
               title="${esc((e && e.description) || 'Omschrijving toevoegen')}"></button>
             <span class="grip" aria-hidden="true" title="Sleep naar een andere dag (Ctrl of ⌥ om te kopiëren)"></span>
           </td>`;
@@ -575,14 +720,14 @@
           ${cells}
           <td class="rowtotal" data-rowtotal></td>
         </tr>`;
-    }).join('') || `<tr><td class="empty-row" colspan="9">${filterActive() ? 'Geen regels voor dit filter.' : 'Voeg een regel toe om uren te schrijven.'}</td></tr>`;
+    }).join('') || `<tr><td class="empty-row" colspan="${data.days.length + 2}">${filterActive() ? 'Geen regels voor dit filter.' : 'Voeg een regel toe om uren te schrijven.'}</td></tr>`;
 
-    const foot = data.days.map((d, i) => `<td class="coltotal${i >= 5 ? ' weekend' : ''}" data-coltotal="${d}"></td>`).join('');
+    const foot = data.days.map((d) => `<td class="coltotal${dow(d) >= 5 ? ' weekend' : ''}" data-coltotal="${d}"></td>`).join('');
     const canAdd = addableRows(data).length > 0;
 
     return `
       <div class="grid-wrap">
-        <table class="grid">
+        <table class="grid${data.period === 'month' ? ' month' : ''}">
           <thead><tr><th class="proj" scope="col">Project</th>${head}<th class="rowtotal" scope="col">Totaal</th></tr></thead>
           <tbody>${body}</tbody>
           <tfoot><tr><td class="proj muted">${filterActive() ? 'Per dag, gefilterd' : 'Per dag'}</td>${foot}<td class="rowtotal" data-weektotal></td></tr></tfoot>
@@ -875,7 +1020,8 @@
 
   /* ---------- Kop, totalen en raster-acties ---------- */
 
-  function weekNavHTML(data, prev, next) {
+  function weekNavHTML(data) {
+    const month = data.period === 'month';
     const entries = data.map ? [...data.map.values()] : [];
     const count = (st) => entries.filter((e) => st.includes(e.status)).length;
     const editable = count(EDITABLE);
@@ -886,32 +1032,43 @@
     else if (entries.length && entries.every((e) => e.status === 'invoiced')) label = 'Gefactureerd';
     else if (entries.length) label = 'Goedgekeurd';
     const total = entries.reduce((s, e) => s + e.hours, 0);
-    const isThisWeek = data.week_start === weekStart(todayIso());
+    const contract = month ? Math.round((data.weekly_hours / 5) * workdayCount(data.days) * 10) / 10 : data.weekly_hours;
+    const today = todayIso();
+    const prev = month ? shiftMonth(data.week_start, -1) : addDays(data.week_start, -7);
+    const next = month ? shiftMonth(data.week_start, 1) : addDays(data.week_start, 7);
+    const isCurrent = month ? today.slice(0, 7) === data.week_start.slice(0, 7) : data.week_start === weekStart(today);
+    const [y, m] = data.week_start.split('-').map(Number);
+    const title = month ? `${MONTHS_LONG[m - 1][0].toUpperCase()}${MONTHS_LONG[m - 1].slice(1)} ${y}` : `Week ${isoWeek(data.week_start)}`;
+    const word = month ? 'maand' : 'week';
     return `
       <div class="sheet-head">
         <div class="week-nav">
-          <a class="btn" href="#/uren/${prev}" aria-label="Vorige week">‹</a>
-          <h1>Week ${isoWeek(data.week_start)}</h1>
-          <a class="btn" href="#/uren/${next}" aria-label="Volgende week">›</a>
-          ${isThisWeek ? '' : `<a class="btn ghost" href="#/uren/${todayIso()}">Deze week</a>`}
-          <span class="range">${fmtRange(data.week_start, data.week_end)}</span>
+          <a class="btn" href="#/uren/${prev}" aria-label="Vorige ${word}">‹</a>
+          <h1>${title}</h1>
+          <a class="btn" href="#/uren/${next}" aria-label="Volgende ${word}">›</a>
+          ${isCurrent ? '' : `<a class="btn ghost" href="#/uren/${today}">Deze ${word}</a>`}
+          ${month ? '' : `<span class="range">${fmtRange(data.week_start, data.week_end)}</span>`}
         </div>
         <div class="row">
+          <div class="seg" role="group" aria-label="Periode">
+            <button type="button" data-sheet-period="week" aria-pressed="${!month}">Week</button>
+            <button type="button" data-sheet-period="month" aria-pressed="${month}">Maand</button>
+          </div>
           <div class="seg" role="group" aria-label="Weergave">
             <button type="button" data-sheet-mode="grid" aria-pressed="${sheetMode() === 'grid'}">Raster</button>
             <button type="button" data-sheet-mode="list" aria-pressed="${sheetMode() === 'list'}">Lijst</button>
           </div>
-          <div class="week-total"><strong>${fh(total)}</strong><span class="muted">van ${fh(data.weekly_hours)} uur</span></div>
+          <div class="week-total"><strong>${fh(total)}</strong><span class="muted">van ${fh(contract)} uur</span></div>
           <span class="muted">${label}</span>
           ${submitted && !editable ? '<button class="btn" type="button" data-sheet-action="recall">Terughalen</button>' : ''}
-          <button class="btn primary" type="button" data-sheet-action="submit"${editable ? '' : ' disabled'}>Week indienen</button>
+          <button class="btn primary" type="button" data-sheet-action="submit"${editable ? '' : ' disabled'}>${month ? 'Maand' : 'Week'} indienen</button>
         </div>
       </div>`;
   }
 
   function refreshSheetChrome(view) {
     const data = state.sheet;
-    view.querySelector('#sheet-head').innerHTML = weekNavHTML(data, addDays(data.week_start, -7), addDays(data.week_start, 7));
+    view.querySelector('#sheet-head').innerHTML = weekNavHTML(data);
 
     const rejected = [...data.map.values()].filter((e) => e.status === 'rejected');
     view.querySelector('#sheet-notices').innerHTML = rejected.length
@@ -1119,16 +1276,19 @@
 
   async function sheetAction(view, action) {
     const week = state.sheet.week_start;
+    const month = state.sheet.period === 'month';
+    const period = month ? { month: week.slice(0, 7) } : { week };
     try {
       if (action === 'submit') {
         const missing = [...state.sheet.map.values()].filter((e) => EDITABLE.includes(e.status) && !e.description).length;
         const extra = missing ? ` ${missing === 1 ? 'Eén regel heeft' : `${missing} regels hebben`} nog geen omschrijving.` : '';
-        const ok = await confirmDialog('Week indienen', `Na indienen kun je de uren niet meer wijzigen, tenzij je ze terughaalt.${extra}`, 'Week indienen');
+        const label = month ? 'Maand indienen' : 'Week indienen';
+        const ok = await confirmDialog(label, `Na indienen kun je de uren niet meer wijzigen, tenzij je ze terughaalt.${extra}`, label);
         if (!ok) return;
-        const res = await api('/timesheet/submit', { method: 'POST', body: { week } });
+        const res = await api('/timesheet/submit', { method: 'POST', body: period });
         toast(`${res.submitted} ${res.submitted === 1 ? 'regel' : 'regels'} ingediend`);
       } else if (action === 'recall') {
-        const res = await api('/timesheet/recall', { method: 'POST', body: { week } });
+        const res = await api('/timesheet/recall', { method: 'POST', body: period });
         toast(`${res.recalled} ${res.recalled === 1 ? 'regel' : 'regels'} teruggehaald`);
       }
       render();

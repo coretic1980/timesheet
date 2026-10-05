@@ -535,3 +535,49 @@ table.grid .proj .budget { display: block; }
 .act-table th, .act-table td { padding-left: 0.5rem; padding-right: 0.5rem; }
 .act-table td:first-child { min-width: 12rem; }
 dialog.wide { width: min(980px, calc(100vw - 2rem)); }
+
+/* Meervoudige selectie in het filter */
+.ms { position: relative; display: grid; gap: 0.25rem; }
+.ms-label { font-weight: 500; font-size: 0.9rem; }
+.ms-button {
+  font: inherit; text-align: left; cursor: pointer;
+  width: 20rem; max-width: 100%;
+  padding: 0.45rem 2rem 0.45rem 0.6rem;
+  border: 1px solid var(--line); border-radius: var(--radius-s);
+  background: var(--surface); color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  position: relative;
+}
+.ms-button::after { content: '▾'; position: absolute; right: 0.65rem; top: 50%; transform: translateY(-50%); color: var(--muted); }
+.ms.active .ms-button { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.ms-panel {
+  position: absolute; top: 100%; left: 0; z-index: 40; margin-top: 0.25rem;
+  width: max(20rem, 100%); max-width: calc(100vw - 2rem);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m);
+  box-shadow: 0 16px 40px -16px rgba(10, 25, 40, 0.35);
+  padding: 0.5rem;
+}
+.ms-search { width: 100%; }
+.ms-actions { display: flex; justify-content: space-between; margin: 0.35rem 0; }
+.ms-options { max-height: 18rem; overflow: auto; display: grid; }
+.ms-option { padding: 0.35rem 0.4rem; border-radius: var(--radius-s); font-weight: 400; align-items: flex-start; }
+.ms-option:hover { background: var(--line-soft); }
+.ms-option input { margin-top: 0.15rem; flex: none; }
+.ms-empty { padding: 0.4rem; }
+@media (max-width: 640px) {
+  .ms, .ms-button { width: 100%; }
+}
+
+/* Maandraster: compacte kolommen, projectkolom blijft staan bij horizontaal scrollen */
+table.grid.month { min-width: 0; width: max-content; }
+table.grid.month .proj { position: sticky; left: 0; z-index: 2; background: var(--surface); min-width: 200px; max-width: 220px; box-shadow: 1px 0 0 var(--line-soft); }
+table.grid.month thead th { padding: 0.45rem 0.1rem; font-size: 0.75rem; }
+table.grid.month thead th .dnum { font-size: 0.95rem; }
+table.grid.month td.cell { width: 2.9rem; min-width: 2.9rem; }
+table.grid.month td.cell input.hrs { font-size: 0.95rem; padding: 0.6rem 0.1rem 0.6rem 0.25rem; }
+table.grid.month td.cell .note { width: 14px; height: 14px; font-size: 10px; line-height: 14px; right: 1px; top: 1px; }
+table.grid.month td.cell .grip { left: 3px; bottom: 1px; font-size: 11px; }
+table.grid.month .rowtotal { padding: 0.6rem 0.6rem; }
+table.grid.month tfoot .coltotal { font-size: 0.85rem; padding: 0.5rem 0.1rem; }
+table.grid.month th.weekend.proj, table.grid.month .proj.weekend { background: var(--surface); }
+table.grid.month thead th.proj { padding: 0.6rem 0.9rem; font-size: 0.85rem; }
