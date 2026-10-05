@@ -357,6 +357,24 @@ r.post('/activities/import', ah(async (req, res) => {
   res.json(out);
 }));
 
+// Projecten waaraan een activiteit gekoppeld is, met tarief, budget en verbruik.
+r.get('/activities/:id/projects', ah(async (req, res) => {
+  const { rows } = await query(
+    `SELECT p.id AS project_id, p.name AS project_name, p.active, c.name AS client_name,
+            pa.rate, pa.budget_hours, pa.budget_amount,
+            (SELECT coalesce(sum(e.hours), 0) FROM time_entries e WHERE e.project_id = p.id AND e.activity_id = pa.activity_id) AS used_hours,
+            (SELECT coalesce(sum(e.hours * e.rate), 0) FROM time_entries e
+              WHERE e.project_id = p.id AND e.activity_id = pa.activity_id AND e.status IN ('approved', 'invoiced')) AS used_amount
+       FROM project_activities pa
+       JOIN projects p ON p.id = pa.project_id
+       LEFT JOIN clients c ON c.id = p.client_id
+      WHERE pa.activity_id = $1
+      ORDER BY p.active DESC, c.name NULLS LAST, p.name`,
+    [intParam(req.params.id)]
+  );
+  res.json(rows);
+}));
+
 r.get('/projects/:id/activities', ah(async (req, res) => {
   const { rows } = await query(
     `SELECT a.id AS activity_id, a.name, a.default_rate, a.active, pa.rate, pa.budget_hours, pa.budget_amount,

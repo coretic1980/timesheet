@@ -615,3 +615,16 @@ td .budget-line { min-width: 200px; font-size: 0.85rem; }
 
 .budget-line.lvl-ok { color: var(--muted); font-weight: 500; }
 .budget-legend { max-width: none; }
+
+.budget-row { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 0.4rem; }
+.budget-row + .budget-row { margin-top: 0.2rem; }
+.budget-kind { font-size: 0.68rem; color: var(--muted); min-width: 3.9rem; }
+table.grid.month .budget-kind { min-width: 0; }
+/* In het raster: label en tekst op één regel, balk eronder over de volle breedte */
+table.grid .proj .budget-slot { max-width: none; }
+table.grid .proj .budget-row { grid-template-columns: 1fr; gap: 0; }
+table.grid .proj .budget-row .budget-kind { display: none; }
+table.grid .proj .budget-line { flex-wrap: wrap; gap: 0.1rem 0.35rem; }
+table.grid .proj .budget-line .bbar { order: 2; flex-basis: 100%; min-width: 0; }
+table.grid .proj .budget-line .nowrap::before { content: attr(data-kind) ' '; font-weight: 600; }
+table.grid .proj { overflow: hidden; }

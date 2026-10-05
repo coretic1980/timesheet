@@ -155,7 +155,7 @@
     const left = 1 - used / budget;
     return left >= 0.5 ? 'ok' : left >= 0.25 ? 'warn' : 'low';
   }
-  function budgetBar(used, budget, unit = 'hours') {
+  function budgetBar(used, budget, unit = 'hours', kind = '') {
     const money = unit === 'amount';
     const f = money ? eur : (x) => `${fh(x)} uur`;
     const lvl = budgetLevel(used, budget);
@@ -166,7 +166,7 @@
     const text = money ? `${eur0(used)} / ${eur0(budget)}` : `${fh(used)} / ${fh(budget)} uur`;
     return `<div class="budget-line lvl-${lvl}" title="${esc(title)}">
       <div class="bbar"><span style="width:${Math.min(100, (used / budget) * 100).toFixed(1)}%"></span></div>
-      <span class="nowrap">${text}</span></div>`;
+      <span class="nowrap"${kind ? ` data-kind="${esc(kind)}"` : ''}>${text}</span></div>`;
   }
   const opt = (value, label, selected) => `<option value="${esc(value)}"${selected ? ' selected' : ''}>${esc(label)}</option>`;
 
@@ -388,19 +388,22 @@
       for (const a of p.activities || []) a.baseUsed = (a.used_hours || 0) - weekHours(p.id, a.id);
     }
   }
-  function budgetInfo(pid, aid) {
+  // Budgetten voor een regel: het projectbudget (alle activiteiten samen) en, als die er is,
+  // het budget van de activiteit op dit project.
+  function budgetInfos(pid, aid) {
     const p = projectOf(pid);
-    if (!p) return null;
+    if (!p) return [];
+    const out = [];
+    if (p.budget_hours) {
+      out.push({ kind: 'Project', used: (p.baseUsed || 0) + weekHours(pid, null), budget: p.budget_hours, unit: 'hours' });
+    }
     const a = activityOf(p, aid);
-    if (a) {
-      if (a.budget_hours) return { used: (a.baseUsed || 0) + weekHours(pid, aid), budget: a.budget_hours, unit: 'hours' };
-      if (a.budget_amount) return { used: a.used_amount || 0, budget: a.budget_amount, unit: 'amount' };
-      return null;
+    if (a && a.budget_hours) {
+      out.push({ kind: 'Activiteit', used: (a.baseUsed || 0) + weekHours(pid, aid), budget: a.budget_hours, unit: 'hours' });
+    } else if (a && a.budget_amount) {
+      out.push({ kind: 'Activiteit', used: a.used_amount || 0, budget: a.budget_amount, unit: 'amount' });
     }
-    if (!(p.activities || []).length && p.budget_hours) {
-      return { used: (p.baseUsed || 0) + weekHours(pid, null), budget: p.budget_hours, unit: 'hours' };
-    }
-    return null;
+    return out;
   }
   const budgetSlot = (key) => `<div class="budget-slot" data-budget="${key}" hidden></div>`;
 
@@ -1095,9 +1098,9 @@
 
     for (const el of view.querySelectorAll('[data-budget]')) {
       const { pid, aid } = parseKey(el.dataset.budget);
-      const info = budgetInfo(pid, aid);
-      el.hidden = !info;
-      el.innerHTML = info ? budgetBar(info.used, info.budget, info.unit) : '';
+      const infos = budgetInfos(pid, aid);
+      el.hidden = !infos.length;
+      el.innerHTML = infos.map((i) => `<div class="budget-row"><span class="budget-kind">${i.kind}</span>${budgetBar(i.used, i.budget, i.unit, i.kind)}</div>`).join('');
     }
 
     if (!view.querySelector('table.grid')) return;
@@ -2131,16 +2134,49 @@
     }));
     el.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => {
       const a = acts.find((x) => x.id === Number(b.dataset.edit));
-      openDialog({
-        title: `${a.name} wijzigen`,
-        body: form(a),
-        onSubmit: async (fd) => {
-          await api(`/admin/activities/${a.id}`, { method: 'PATCH', body: { ...collect(fd), active: fd.get('active') === 'on' } });
-          adminActivities(el);
-        },
-      });
+      openActivityEdit(el, a, form, collect);
     }));
     el.querySelector('[data-import]').addEventListener('click', () => openActivityImport(el, acts));
+  }
+
+  // Activiteit wijzigen, met de budgetten per project waaraan de activiteit gekoppeld is.
+  async function openActivityEdit(el, act, form, collect) {
+    const projects = await api(`/admin/activities/${act.id}/projects`);
+    const budgets = projects.length ? `
+      <h3>Budget per project</h3>
+      <p class="muted small">Het budget hoort bij deze activiteit op een specifiek project. Leeg laten = geen budget. Koppelen aan meer projecten doe je onder Projecten › Activiteiten.</p>
+      <div class="table-wrap"><table class="data act-table">
+        <thead><tr><th>Klant / project</th><th>Budget (uren)</th><th>Budget (€)</th><th>Verbruik</th></tr></thead>
+        <tbody>${projects.map((p) => `
+          <tr>
+            <td>${esc(p.client_name || 'Intern')} / ${esc(p.project_name)}${p.active ? '' : ' <span class="muted small">(afgesloten)</span>'}</td>
+            <td><input name="bh${p.project_id}" inputmode="decimal" value="${fmtInput(p.budget_hours)}" aria-label="Budget uren ${esc(p.project_name)}"></td>
+            <td><input name="ba${p.project_id}" inputmode="decimal" value="${fmtInput(p.budget_amount)}" aria-label="Budget euro ${esc(p.project_name)}"></td>
+            <td>${p.budget_hours ? budgetBar(p.used_hours, p.budget_hours)
+              : p.budget_amount ? budgetBar(p.used_amount, p.budget_amount, 'amount')
+                : `<span class="muted small">${fh(p.used_hours)} uur</span>`}</td>
+          </tr>`).join('')}</tbody>
+      </table></div>`
+      : '<p class="muted small">Deze activiteit is nog niet aan een project gekoppeld. Koppel hem onder Projecten › Activiteiten; daarna kun je hier per project een budget instellen.</p>';
+    openDialog({
+      title: `${act.name} wijzigen`,
+      wide: true,
+      body: form(act) + budgets,
+      onSubmit: async (fd) => {
+        await api(`/admin/activities/${act.id}`, { method: 'PATCH', body: { ...collect(fd), active: fd.get('active') === 'on' } });
+        for (const p of projects) {
+          const bh = numOrNull(fd.get(`bh${p.project_id}`));
+          const ba = numOrNull(fd.get(`ba${p.project_id}`));
+          if (bh !== p.budget_hours || ba !== p.budget_amount) {
+            await api(`/admin/projects/${p.project_id}/activities/${act.id}`, {
+              method: 'PUT', body: { rate: p.rate, budget_hours: bh, budget_amount: ba },
+            });
+          }
+        }
+        toast('Activiteit opgeslagen');
+        adminActivities(el);
+      },
+    });
   }
 
   function openActivityImport(el, acts) {
