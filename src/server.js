@@ -43,8 +43,13 @@ app.use('/api/invoicing', requireAdmin, require('./routes/invoicing'));
 app.use('/api/reports', requireAdmin, require('./routes/reports'));
 app.use('/api', (req, res, next) => next(new HttpError(404, 'Onbekend endpoint')));
 
-app.use(express.static(path.join(__dirname, '..', 'public'), { maxAge: '1h', index: 'index.html' }));
-app.get('*', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
+// Altijd laten controleren of er een nieuwe versie is (ETag), zodat een deploy direct zichtbaar is.
+const noCache = (res) => res.setHeader('Cache-Control', 'no-cache');
+app.use(express.static(path.join(__dirname, '..', 'public'), { index: 'index.html', setHeaders: noCache }));
+app.get('*', (req, res) => {
+  noCache(res);
+  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+});
 
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
