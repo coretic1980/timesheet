@@ -598,7 +598,12 @@ r.get('/eb/options', ah(async (req, res) => {
       label: [l.code, l.description || l.name].filter(Boolean).join(' '),
     })),
     templates: templates.map((t) => ({ id: t.id, label: t.name || t.description || `Sjabloon ${t.id}` })),
-    units: units.map((u) => ({ id: u.id, label: u.name || u.description || u.code || `Eenheid ${u.id}` })),
+    // e-Boekhouden noemt eenheden in enkelvoud en meervoud, bijvoorbeeld "uur" / "uren".
+    units: units.map((u) => {
+      const one = u.singular || u.name || u.description || u.code;
+      const label = one ? (u.plural && u.plural !== one ? `${one} / ${u.plural}` : one) : `Eenheid ${u.id}`;
+      return { id: u.id, label };
+    }),
   });
 }));
 

@@ -233,11 +233,33 @@ r.post('/create', ah(async (req, res) => {
 
 r.get('/history', ah(async (req, res) => {
   const { rows } = await query(
-    `SELECT i.*, c.name AS client_name, u.name AS created_by_name
-       FROM invoices i JOIN clients c ON c.id = i.client_id LEFT JOIN users u ON u.id = i.created_by
+    `SELECT i.*, c.name AS client_name, u.name AS created_by_name, rv.name AS reverted_by_name
+       FROM invoices i JOIN clients c ON c.id = i.client_id
+       LEFT JOIN users u ON u.id = i.created_by
+       LEFT JOIN users rv ON rv.id = i.reverted_by
       ORDER BY i.created_at DESC LIMIT 100`
   );
   res.json(rows);
+}));
+
+// Factuur terugdraaien: de uren gaan terug naar 'goedgekeurd' en kunnen opnieuw gefactureerd worden.
+// De factuur in e-Boekhouden moet de gebruiker zelf verwijderen of crediteren (de API kan dat niet).
+r.post('/:id/revert', ah(async (req, res) => {
+  const id = intParam(req.params.id, 'factuur');
+  const result = await tx(async (db) => {
+    const inv = (await db.query('SELECT * FROM invoices WHERE id = $1 FOR UPDATE', [id])).rows[0];
+    if (!inv) throw new HttpError(404, 'Factuur niet gevonden');
+    if (inv.reverted_at) throw new HttpError(400, 'Deze factuur is al teruggedraaid');
+    const upd = await db.query(
+      `UPDATE time_entries SET status = 'approved', invoice_id = NULL, updated_at = now()
+        WHERE invoice_id = $1 AND status = 'invoiced'
+        RETURNING hours`,
+      [id]
+    );
+    await db.query('UPDATE invoices SET reverted_at = now(), reverted_by = $2 WHERE id = $1', [id, req.user.id]);
+    return { reverted: upd.rowCount, hours: round2(upd.rows.reduce((t, x) => t + x.hours, 0)) };
+  });
+  res.json(result);
 }));
 
 module.exports = r;

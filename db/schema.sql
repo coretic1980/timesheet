@@ -85,6 +85,10 @@ CREATE TABLE IF NOT EXISTS invoices (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Teruggedraaide facturen (uren weer vrijgegeven om opnieuw te factureren)
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS reverted_at TIMESTAMPTZ;
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS reverted_by INT REFERENCES users(id);
+
 CREATE TABLE IF NOT EXISTS time_entries (
   id               SERIAL PRIMARY KEY,
   user_id          INT NOT NULL REFERENCES users(id),

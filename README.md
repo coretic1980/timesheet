@@ -129,7 +129,9 @@ concept ──indienen──▶ ingediend ──goedkeuren──▶ goedgekeurd 
    └──────────────── terugzetten (beheerder) ────────┘
 ```
 
-Gefactureerde uren liggen vast. Moet er toch iets worden gecorrigeerd, maak dan een creditfactuur in e-Boekhouden.
+Gefactureerde uren liggen vast. Moet er toch iets worden gecorrigeerd:
+1. Verwijder of crediteer de factuur in e-Boekhouden.
+2. Gebruik daarna **Terugdraaien** bij Facturen › Gemaakte facturen. De uren van die factuur gaan dan terug naar "goedgekeurd" en zijn opnieuw te factureren. De factuur blijft in de lijst met het label "Teruggedraaid".
 
 ## Beveiliging
 

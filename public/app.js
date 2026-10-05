@@ -1429,7 +1429,7 @@
       </tr>`).join('');
 
     const histRows = history.map((i) => `
-      <tr>
+      <tr${i.reverted_at ? ' class="muted"' : ''}>
         <td class="nowrap">${fmtDate(i.created_at.slice(0, 10), true)}</td>
         <td>${esc(i.client_name)}</td>
         <td class="nowrap">${fmtRange(i.period_from, i.period_to)}</td>
@@ -1437,6 +1437,9 @@
         <td class="num">${eur(i.total_excl)}</td>
         <td>${esc(i.eb_invoice_number || (i.eb_invoice_id ? `#${i.eb_invoice_id}` : '–'))}</td>
         <td>${i.pdf_url ? `<a href="${esc(i.pdf_url)}" target="_blank" rel="noopener">PDF</a>` : ''}</td>
+        <td class="right nowrap">${i.reverted_at
+          ? `<span class="badge" title="Teruggedraaid op ${fmtDate(i.reverted_at.slice(0, 10), true)}${i.reverted_by_name ? ` door ${esc(i.reverted_by_name)}` : ''}">Teruggedraaid</span>`
+          : `<button class="btn small" data-revert="${i.id}">Terugdraaien</button>`}</td>
       </tr>`).join('');
 
     view.innerHTML = `
@@ -1463,7 +1466,7 @@
         <section class="panel">
           <div class="panel-pad"><h2>Gemaakte facturen</h2></div>
           ${history.length ? `<div class="table-wrap"><table class="data">
-            <thead><tr><th>Gemaakt</th><th>Klant</th><th>Periode</th><th class="num">Uren</th><th class="num">Excl. btw</th><th>Factuurnummer</th><th></th></tr></thead>
+            <thead><tr><th>Gemaakt</th><th>Klant</th><th>Periode</th><th class="num">Uren</th><th class="num">Excl. btw</th><th>Factuurnummer</th><th></th><th></th></tr></thead>
             <tbody>${histRows}</tbody></table></div>`
           : '<div class="empty"><p>Nog geen facturen gemaakt vanuit deze app.</p></div>'}
         </section>
@@ -1481,6 +1484,25 @@
     }));
     view.querySelectorAll('[data-preview]').forEach((b) => b.addEventListener('click', () => {
       showInvoicePreview(view, Number(b.dataset.preview));
+    }));
+    view.querySelectorAll('[data-revert]').forEach((b) => b.addEventListener('click', () => {
+      const inv = history.find((x) => x.id === Number(b.dataset.revert));
+      const nr = inv.eb_invoice_number || (inv.eb_invoice_id ? `#${inv.eb_invoice_id}` : '');
+      openDialog({
+        title: `Factuur ${nr} terugdraaien`.replace('  ', ' '),
+        submit: 'Terugdraaien',
+        danger: true,
+        body: `
+          <div class="notice warn"><strong>Eerst in e-Boekhouden:</strong> verwijder deze factuur (als hij nog een concept is) of maak er een creditfactuur voor. De app kan facturen in e-Boekhouden niet verwijderen.</div>
+          <p>Daarna zet terugdraaien de ${fh(inv.hours)} uur van ${esc(inv.client_name)} (${fmtRange(inv.period_from, inv.period_to)}, ${eur(inv.total_excl)} excl. btw) terug naar goedgekeurd, zodat je ze opnieuw kunt factureren.</p>
+          <label class="check"><input type="checkbox" name="confirm" required> Ik heb de factuur in e-Boekhouden verwijderd of gecrediteerd</label>`,
+        onSubmit: async (fd) => {
+          if (fd.get('confirm') !== 'on') throw new Error('Vink eerst aan dat de factuur in e-Boekhouden is verwijderd of gecrediteerd');
+          const res = await api(`/invoicing/${inv.id}/revert`, { method: 'POST' });
+          toast(`Factuur teruggedraaid: ${res.reverted} ${res.reverted === 1 ? 'regel' : 'regels'} (${fh(res.hours)} uur) weer te factureren`);
+          render();
+        },
+      });
     }));
   }
 
@@ -2567,6 +2589,15 @@
     });
   }
 
+  const VAT_LABELS = {
+    HOOG_VERK_21: '21% btw (normaal tarief)',
+    LAAG_VERK_9: '9% btw (laag tarief)',
+    VERL_VERK: 'Btw verlegd (binnen Nederland)',
+    BU_EU_VERK: 'Klant buiten de EU (0%)',
+    BI_EU_VERK: 'Zakelijke klant binnen de EU, verlegd (0%)',
+    GEEN: 'Geen btw',
+  };
+
   async function adminEb(el) {
     const s = await api('/admin/settings');
     let options = null;
@@ -2605,7 +2636,7 @@
             <label class="field">Omzetrekening<span class="hint">Bijvoorbeeld 8000 Omzet</span>${pick('revenueLedgerId', options && options.ledgers, e.revenueLedgerId, { filterCat: 'VW' })}</label>
             <label class="field">Debiteurenrekening<span class="hint">Nodig om direct te verwerken</span>${pick('debtorLedgerId', options && options.ledgers, e.debtorLedgerId, { filterCat: 'DEB', allowEmpty: true })}</label>
             <label class="field">Eenheid op factuurregel${pick('unitId', options && options.units, e.unitId, { allowEmpty: true, emptyLabel: 'Geen eenheid' })}</label>
-            <label class="field">Btw-code<select name="vatCode">${s.vat_codes.map((v) => opt(v, v, v === e.vatCode)).join('')}</select></label>
+            <label class="field">Btw-code<span class="hint">Voor Nederlandse zakelijke klanten: 21%</span><select name="vatCode">${s.vat_codes.map((v) => opt(v, VAT_LABELS[v] || v, v === e.vatCode)).join('')}</select></label>
             <label class="field">Betaaltermijn (dagen)<input name="termOfPayment" inputmode="numeric" value="${esc(e.termOfPayment)}"></label>
           </div>
           <label class="check"><input type="checkbox" name="process"${e.process ? ' checked' : ''}> Factuur direct verwerken in de boekhouding (wordt een openstaande post)</label>
