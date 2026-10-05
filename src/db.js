@@ -15,7 +15,10 @@ if (!process.env.DATABASE_URL) {
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+  // Versleuteld én certificaat gecontroleerd (Neon heeft geldige certificaten).
+  // Alleen voor lokaal testen: DATABASE_SSL=false (geen TLS) of DATABASE_SSL=no-verify.
+  ssl: process.env.DATABASE_SSL === 'false' ? false
+    : { rejectUnauthorized: process.env.DATABASE_SSL !== 'no-verify' },
   max: Number(process.env.DATABASE_POOL_MAX || 5),
 });
 

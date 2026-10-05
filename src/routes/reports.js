@@ -100,7 +100,9 @@ r.get('/export.csv', ah(async (req, res) => {
   // Puntkomma en decimale komma, zodat Nederlandse Excel het direct goed opent.
   const cell = (v) => {
     if (v === null || v === undefined) return '';
-    const s = typeof v === 'number' ? String(v).replace('.', ',') : String(v);
+    let s = typeof v === 'number' ? String(v).replace('.', ',') : String(v);
+    // Tekst die met = + - @ begint, zou Excel als formule uitvoeren: neutraliseren.
+    if (typeof v !== 'number' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
     return /[;"\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const header = ['Datum', 'Medewerker', 'Klant', 'Projectcode', 'Project', 'Activiteit', 'Uren', 'Tarief', 'Status', 'Omschrijving', 'Factuur'];

@@ -144,11 +144,32 @@ Gefactureerde uren liggen vast. Moet er toch iets worden gecorrigeerd:
 
 ## Beveiliging
 
-- Wachtwoorden worden gehasht met bcrypt (cost 12).
-- Sessies lopen via een httpOnly-cookie (30 dagen). In de database staat alleen de hash van het token.
-- CSRF-bescherming via SameSite=Lax plus een verplichte `X-Requested-With`-header op mutaties.
-- Inlogpogingen worden afgeremd per IP, er staat een strikte CSP, en HSTS staat aan in productie.
-- Het e-Boekhouden-token staat alleen in de omgevingsvariabelen en nooit in de database of de browser.
+**Al geregeld in de app**
+- **Wachtwoorden:** gehasht met bcrypt (cost 12). Inloggen geeft dezelfde foutmelding en duurt even lang, of het e-mailadres nu bestaat of niet.
+- **Sessies:** httpOnly-cookie (Secure, SameSite=Lax, 30 dagen); in de database staat alleen de hash van het token. Na een wachtwoordwijziging of het deactiveren van een account worden alle sessies van die gebruiker ingetrokken.
+- **CSRF:** elke wijziging vereist een eigen header die andere websites niet kunnen meesturen.
+- **Inlogpogingen:** maximaal 10 mislukte pogingen per IP per kwartier.
+- **Rechten op de server:** medewerkers kunnen alleen hun eigen uren zien en wijzigen. Beheer, goedkeuren, facturen en rapportage zijn alleen voor beheerders.
+- **SQL:** alle queries zijn geparametriseerd. Gebruikersinvoer wordt in de browser altijd ge-escaped.
+- **Headers:** strikte CSP, HSTS, X-Frame-Options, nosniff, Permissions-Policy.
+- **e-Boekhouden-token:** staat alleen in een omgevingsvariabele op de server, nooit in de database of de browser.
+- **Database:** de verbinding is versleuteld en het certificaat wordt gecontroleerd.
+- **CSV-export:** omschrijvingen kunnen in Excel geen formules uitvoeren.
+- **Facturatie:** gebeurt in één transactie met vergrendelde uren, zodat er niet dubbel gefactureerd kan worden.
+
+**Zelf regelen**
+1. **ADMIN_PASSWORD:** verwijder deze variabele in Render na de eerste start, en kies voor alle accounts een lang, uniek wachtwoord.
+2. **Eigen databaserol:** geef de urenapp in Neon een eigen rol die alleen eigenaar is van de database `timesheet`, in plaats van `neondb_owner`. Dan kan de app niet bij je Neptune-data.
+3. **Token voor e-Boekhouden:**
+   - Maak het aan onder een aparte e-Boekhouden-gebruiker met alleen de rechten die nodig zijn: relaties, facturen, grootboek lezen.
+   - Geef het een vervaldatum.
+   - Trek het direct in als je denkt dat het is uitgelekt.
+4. **Back-ups:** controleer in Neon hoe ver je terug kunt (point-in-time restore).
+5. **Updates:** voer af en toe `npm audit` en `npm update` uit, en deploy opnieuw.
+
+**Bekende beperkingen**
+- **Geen tweestapsverificatie.** Voor een beheeraccount met toegang tot de facturatie is dat het belangrijkste dat nog ontbreekt.
+- **De Excel-lezer voor de imports** (SheetJS 0.18.5 via cdnjs) heeft bekende kwetsbaarheden bij het lezen van kwaadwillig gemaakte bestanden. De lezer draait alleen in de browser van de beheerder en alleen voor bestanden die je zelf uploadt; importeer daarom alleen je eigen exports uit e-Boekhouden.
 
 ## Structuur
 

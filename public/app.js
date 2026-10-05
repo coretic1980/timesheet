@@ -1439,7 +1439,7 @@
         <td class="num">${fh(i.hours)}</td>
         <td class="num">${eur(i.total_excl)}</td>
         <td>${esc(i.eb_invoice_number || (i.eb_invoice_id ? `#${i.eb_invoice_id}` : '–'))}</td>
-        <td>${i.pdf_url ? `<a href="${esc(i.pdf_url)}" target="_blank" rel="noopener">PDF</a>` : ''}</td>
+        <td>${/^https:\/\//i.test(i.pdf_url || '') ? `<a href="${esc(i.pdf_url)}" target="_blank" rel="noopener noreferrer">PDF</a>` : ''}</td>
         <td class="right nowrap">${i.reverted_at
           ? `<span class="badge" title="Teruggedraaid op ${fmtDate(i.reverted_at.slice(0, 10), true)}${i.reverted_by_name ? ` door ${esc(i.reverted_by_name)}` : ''}">Teruggedraaid</span>`
           : `<button class="btn small" data-revert="${i.id}">Terugdraaien</button>`}</td>
