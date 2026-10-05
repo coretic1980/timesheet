@@ -13,6 +13,8 @@
   const eurFmt = new Intl.NumberFormat('nl-NL', { style: 'currency', currency: 'EUR' });
   const fh = (n) => nl.format(n || 0);
   const eur = (n) => eurFmt.format(n || 0);
+  const eur0Fmt = new Intl.NumberFormat('nl-NL', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 });
+  const eur0 = (n) => eur0Fmt.format(n || 0);
   const pct = (n) => (n === null || n === undefined ? '–' : `${Math.round(n * 100)}%`);
   const DAYS = ['ma', 'di', 'wo', 'do', 'vr', 'za', 'zo'];
   const DAYS_LONG = ['maandag', 'dinsdag', 'woensdag', 'donderdag', 'vrijdag', 'zaterdag', 'zondag'];
@@ -147,6 +149,25 @@
     const w = Math.max(0, Math.min(1, ratio || 0)) * 100;
     return `<div class="bar${ratio > 1 ? ' over' : ''}"><span style="width:${w.toFixed(1)}%"></span></div>`;
   };
+  // Budgetbalk: kleur op basis van wat er nog over is. Groen 50-100%, oranje 25-50%, rood < 25% of overschreden.
+  function budgetLevel(used, budget) {
+    if (used > budget) return 'over';
+    const left = 1 - used / budget;
+    return left >= 0.5 ? 'ok' : left >= 0.25 ? 'warn' : 'low';
+  }
+  function budgetBar(used, budget, unit = 'hours') {
+    const money = unit === 'amount';
+    const f = money ? eur : (x) => `${fh(x)} uur`;
+    const lvl = budgetLevel(used, budget);
+    const left = budget - used;
+    const title = left >= 0
+      ? `Nog ${f(left)} over (${Math.round((left / budget) * 100)}%)`
+      : `${f(-left)} over budget`;
+    const text = money ? `${eur0(used)} / ${eur0(budget)}` : `${fh(used)} / ${fh(budget)} uur`;
+    return `<div class="budget-line lvl-${lvl}" title="${esc(title)}">
+      <div class="bbar"><span style="width:${Math.min(100, (used / budget) * 100).toFixed(1)}%"></span></div>
+      <span class="nowrap">${text}</span></div>`;
+  }
   const opt = (value, label, selected) => `<option value="${esc(value)}"${selected ? ' selected' : ''}>${esc(label)}</option>`;
 
   /* ================= Router & shell ================= */
@@ -371,24 +392,17 @@
     const p = projectOf(pid);
     if (!p) return null;
     const a = activityOf(p, aid);
-    let budget;
-    let used;
     if (a) {
-      budget = a.budget_hours;
-      used = (a.baseUsed || 0) + weekHours(pid, aid);
-    } else if (!(p.activities || []).length) {
-      budget = p.budget_hours;
-      used = (p.baseUsed || 0) + weekHours(pid, null);
+      if (a.budget_hours) return { used: (a.baseUsed || 0) + weekHours(pid, aid), budget: a.budget_hours, unit: 'hours' };
+      if (a.budget_amount) return { used: a.used_amount || 0, budget: a.budget_amount, unit: 'amount' };
+      return null;
     }
-    if (!budget) return null;
-    const ratio = used / budget;
-    return {
-      text: `${fh(used)} / ${fh(budget)} uur`,
-      cls: ratio > 1 ? 'over' : ratio >= 0.9 ? 'warn' : '',
-      title: ratio > 1 ? `Budget met ${fh(used - budget)} uur overschreden` : `Nog ${fh(budget - used)} uur over`,
-    };
+    if (!(p.activities || []).length && p.budget_hours) {
+      return { used: (p.baseUsed || 0) + weekHours(pid, null), budget: p.budget_hours, unit: 'hours' };
+    }
+    return null;
   }
-  const budgetSlot = (key) => `<span class="budget" data-budget="${key}" hidden></span>`;
+  const budgetSlot = (key) => `<div class="budget-slot" data-budget="${key}" hidden></div>`;
 
   // Filter op projecten en/of activiteiten (meervoudig; activiteit werkt ook over projecten heen).
   function filterActive() {
@@ -1083,11 +1097,7 @@
       const { pid, aid } = parseKey(el.dataset.budget);
       const info = budgetInfo(pid, aid);
       el.hidden = !info;
-      if (info) {
-        el.textContent = `Budget ${info.text}`;
-        el.className = `budget${info.cls ? ` ${info.cls}` : ''}`;
-        el.title = info.title;
-      }
+      el.innerHTML = info ? budgetBar(info.used, info.budget, info.unit) : '';
     }
 
     if (!view.querySelector('table.grid')) return;
@@ -1541,6 +1551,9 @@
 
   /* ================= Rapportage ================= */
 
+  const BUDGET_LEGEND = `<p class="budget-legend small"><span class="lvl-ok"><i></i>Ruim budget (50–100% over)</span>
+    <span class="lvl-warn"><i></i>Let op (25–50% over)</span><span class="lvl-low"><i></i>Bijna op of overschreden (minder dan 25%)</span></p>`;
+
   async function viewReports(view) {
     state.reportPeriod = state.reportPeriod || monthBounds(0);
     const { from, to } = state.reportPeriod;
@@ -1565,8 +1578,9 @@
           <td class="num">${fh(p.hours)}</td>
           <td class="num">${fh(p.approved_hours)}</td>
           <td class="num">${p.billable ? eur(p.value) : '–'}</td>
-          <td>${ratio === null ? '<span class="muted">Geen budget</span>'
-            : `<div class="row" style="flex-wrap:nowrap">${bar(ratio)}<span class="nowrap">${fh(p.hours_all_time)} / ${fh(p.budget_hours)}</span></div>`}</td>
+          <td>${p.budget_hours ? budgetBar(p.hours_all_time, p.budget_hours)
+            : p.activity_budget_hours ? `${budgetBar(p.activity_budget_used, p.activity_budget_hours)}<span class="muted small">Som van activiteitbudgetten</span>`
+              : '<span class="muted">Geen budget</span>'}</td>
         </tr>`;
     }).join('');
 
@@ -1596,20 +1610,22 @@
         </section>
         ${r.byActivity && r.byActivity.length ? `<section class="panel">
           <div class="panel-pad"><h2>Budgetten per activiteit</h2>
-            <p class="muted small">Verbruik telt alle uren sinds de start, van alle medewerkers. Het bedrag telt alleen goedgekeurde en gefactureerde uren.</p></div>
+            <p class="muted small">Verbruik telt alle uren sinds de start, van alle medewerkers. Het bedrag telt alleen goedgekeurde en gefactureerde uren.</p>
+            ${BUDGET_LEGEND}</div>
           <div class="table-wrap"><table class="data">
             <thead><tr><th>Klant / project / activiteit</th><th class="num">Uren in periode</th><th>Budget uren</th><th>Budget €</th></tr></thead>
             <tbody>${r.byActivity.map((x) => `
               <tr>
                 <td>${esc(x.client_name || 'Intern')} / ${esc(x.project_name)}<br><span class="muted small">${esc(x.activity_name)}</span>${x.active ? '' : ' <span class="muted small">(afgesloten)</span>'}</td>
                 <td class="num">${fh(x.hours)}</td>
-                <td>${x.budget_hours ? `<div class="row" style="flex-wrap:nowrap">${bar(x.hours_all_time / x.budget_hours)}<span class="nowrap">${fh(x.hours_all_time)} / ${fh(x.budget_hours)}</span></div>` : '<span class="muted">–</span>'}</td>
-                <td>${x.budget_amount ? `<div class="row" style="flex-wrap:nowrap">${bar(x.value_all_time / x.budget_amount)}<span class="nowrap">${eur(x.value_all_time)} / ${eur(x.budget_amount)}</span></div>` : '<span class="muted">–</span>'}</td>
+                <td>${x.budget_hours ? budgetBar(x.hours_all_time, x.budget_hours) : '<span class="muted">–</span>'}</td>
+                <td>${x.budget_amount ? budgetBar(x.value_all_time, x.budget_amount, 'amount') : '<span class="muted">–</span>'}</td>
               </tr>`).join('')}</tbody></table></div>
         </section>` : ''}
         <section class="panel">
           <div class="panel-pad"><h2>Projecten</h2>
-            <p class="muted small">Het budget telt alle geschreven uren sinds de start van het project.</p></div>
+            <p class="muted small">Het budget telt alle geschreven uren sinds de start van het project.</p>
+            ${BUDGET_LEGEND}</div>
           <div class="table-wrap"><table class="data">
             <thead><tr><th>Klant / project</th><th class="num">Uren</th><th class="num">Goedgekeurd</th><th class="num">Waarde</th><th>Budget</th></tr></thead>
             <tbody>${projects}</tbody></table></div>

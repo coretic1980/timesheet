@@ -38,7 +38,7 @@ Stack: Node 20 + Express, Postgres (Neon) en een frontend zonder build-stap. De 
 - **Opmaak factuurregel** met dezelfde codes als in e-Boekhouden: `[DATUM]`, `[PROJECT]`, `[ACTIVITEIT]`, `[OPMERKING]`, plus `[PROJECTCODE]` en `[MEDEWERKER]`. Standaard staat er `[DATUM] | [ACTIVITEIT] | [OPMERKING]` met één regel per uurregel. Samengevoegd (één regel per project, activiteit en medewerker, met datumbereik) kan ook. Beide stel je globaal in onder Koppeling en per klant onder Klanten.
 - **Factuur direct mailen:** e-Boekhouden mailt de factuur naar het factuur-e-mailadres van de relatie, met het onderwerp en de tekst uit Koppeling (codes `[KLANT]` en `[PERIODE]`). Dit zet je per factuur aan of uit.
 - **Budgetten per activiteit:** per project stel je per activiteit een budget in uren en/of euro's in (Projecten › Activiteiten).
-  - In de urenstaat staat bij elke regel het verbruik ("38 / 120 uur"), oranje vanaf 90% en rood bij overschrijding. Het loopt live mee.
+  - In de urenstaat staat bij elke regel een budgetbalk met het verbruik ("38 / 120 uur"). Groen: 50–100% van het budget over, oranje: 25–50% over, rood: minder dan 25% over of overschreden. De balk loopt live mee; in Rapportage worden dezelfde kleuren gebruikt.
   - Onder Rapportage staat een overzicht van alle budgetten.
   - Projecten zonder activiteiten houden hun eigen projectbudget.
 - **Tariefvolgorde** bij goedkeuring:

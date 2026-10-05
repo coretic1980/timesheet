@@ -44,7 +44,11 @@ r.get('/summary', ah(async (req, res) => {
                                             AND e.status IN ('approved', 'invoiced')), 0) AS approved_hours,
             coalesce(sum(e.hours * e.rate) FILTER (WHERE e.work_date BETWEEN $1 AND $2
                                             AND e.status IN ('approved', 'invoiced')), 0) AS value,
-            coalesce(sum(e.hours), 0) AS hours_all_time
+            coalesce(sum(e.hours), 0) AS hours_all_time,
+            (SELECT sum(pa.budget_hours) FROM project_activities pa WHERE pa.project_id = p.id) AS activity_budget_hours,
+            (SELECT coalesce(sum(e2.hours), 0) FROM time_entries e2
+               JOIN project_activities pa2 ON pa2.project_id = e2.project_id AND pa2.activity_id = e2.activity_id
+              WHERE e2.project_id = p.id AND pa2.budget_hours IS NOT NULL) AS activity_budget_used
        FROM projects p
        LEFT JOIN clients c ON c.id = p.client_id
        LEFT JOIN time_entries e ON e.project_id = p.id

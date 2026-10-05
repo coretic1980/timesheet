@@ -49,7 +49,9 @@ r.get('/', ah(async (req, res) => {
   // Activiteiten per project; ook activiteiten die niet meer gekoppeld zijn maar deze week wel gebruikt.
   const ids = projects.map((p) => p.id);
   const linked = ids.length ? (await query(
-    `SELECT pa.project_id, a.id, a.name, a.active, pa.budget_hours
+    `SELECT pa.project_id, a.id, a.name, a.active, pa.budget_hours, pa.budget_amount,
+            (SELECT coalesce(sum(e.hours * e.rate), 0) FROM time_entries e
+              WHERE e.project_id = pa.project_id AND e.activity_id = a.id AND e.status IN ('approved', 'invoiced')) AS used_amount
        FROM project_activities pa JOIN activities a ON a.id = pa.activity_id
       WHERE pa.project_id = ANY($1)
       ORDER BY a.name`,
@@ -60,7 +62,9 @@ r.get('/', ah(async (req, res) => {
     ? (await query('SELECT id, name FROM activities WHERE id = ANY($1)', [usedIds])).rows : [];
   for (const p of projects) {
     p.activities = linked.filter((a) => a.project_id === p.id)
-      .map(({ id, name, active, budget_hours: budgetHours }) => ({ id, name, active, budget_hours: budgetHours }));
+      .map(({ id, name, active, budget_hours: budgetHours, budget_amount: budgetAmount, used_amount: usedAmount }) => ({
+        id, name, active, budget_hours: budgetHours, budget_amount: budgetAmount, used_amount: usedAmount,
+      }));
     for (const e of entries.filter((x) => x.project_id === p.id && x.activity_id)) {
       if (!p.activities.some((a) => a.id === e.activity_id)) {
         const a = used.find((x) => x.id === e.activity_id);

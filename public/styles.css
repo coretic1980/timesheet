@@ -592,3 +592,26 @@ table.grid.month tfoot .coltotal { font-size: 0.75rem; padding: 0.5rem 0; }
   table.grid.month { width: max-content; min-width: 0; }
   table.grid.month thead th:not(.proj):not(.rowtotal) { width: 2.6rem; }
 }
+
+/* Budgetbalk: kleur op basis van wat er nog over is */
+.budget-line { display: flex; align-items: center; gap: 0.45rem; font-size: 0.75rem; color: var(--muted); }
+.bbar { position: relative; flex: 1; min-width: 60px; height: 6px; border-radius: 3px; background: var(--line-soft); overflow: hidden; }
+.bbar > span { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--approved); }
+.lvl-ok .bbar > span { background: var(--approved); }
+.lvl-warn .bbar > span { background: var(--submitted); }
+.lvl-low .bbar > span, .lvl-over .bbar > span { background: var(--rejected); }
+.budget-line.lvl-warn { color: var(--submitted); }
+.budget-line.lvl-low, .budget-line.lvl-over { color: var(--rejected); font-weight: 600; }
+.budget-slot { margin-top: 0.35rem; }
+table.grid .proj .budget-slot { max-width: 190px; }
+table.grid.month .proj .budget-line .nowrap { font-size: 0.7rem; }
+.list-card header .budget-slot { max-width: 320px; }
+td .budget-line { min-width: 200px; font-size: 0.85rem; }
+.budget-legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; color: var(--muted); margin: 0.4rem 0 0; }
+.budget-legend i { display: inline-block; width: 18px; height: 6px; border-radius: 3px; margin-right: 0.35rem; vertical-align: middle; }
+.budget-legend .lvl-ok i { background: var(--approved); }
+.budget-legend .lvl-warn i { background: var(--submitted); }
+.budget-legend .lvl-low i { background: var(--rejected); }
+
+.budget-line.lvl-ok { color: var(--muted); font-weight: 500; }
+.budget-legend { max-width: none; }
