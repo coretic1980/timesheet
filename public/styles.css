@@ -41,6 +41,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; }
 body {
   font-family: var(--font);
@@ -640,3 +641,14 @@ table.grid .proj { overflow: hidden; }
 .budget-line.lvl-low .budget-left, .budget-line.lvl-over .budget-left { color: var(--rejected); }
 td .budget-line .budget-left { font-size: 0.78rem; }
 table.grid.month .budget-left { font-size: 0.66rem; }
+
+/* Tweestapsverificatie */
+.code-input { font-size: 1.4rem; letter-spacing: 0.3em; text-align: center; width: 10rem; font-variant-numeric: tabular-nums; }
+.mfa-panel { width: min(560px, 100%) !important; }
+.mfa-steps { padding-left: 1.2rem; display: grid; gap: 0.9rem; }
+.mfa-qr { margin: 0.6rem 0; padding: 10px; background: #fff; display: inline-block; border-radius: var(--radius-s); border: 1px solid var(--line); min-height: 40px; }
+.mfa-qr img, .mfa-qr canvas { display: block; }
+.mfa-secret { word-break: break-all; font-size: 0.95rem; }
+pre.recovery-codes { font-size: 1rem; line-height: 1.7; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-s); padding: 0.75rem 1rem; columns: 2; }
+.login .mfa-steps form { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.5rem; }
+.login .mfa-steps form .btn { width: auto; }

@@ -1,7 +1,8 @@
 const path = require('path');
 const express = require('express');
 const { migrate, seedAdmin, pool } = require('./db');
-const { loadUser, requireAuth, requireAdmin, csrfGuard, cleanupSessions } = require('./auth');
+const { loadUser, requireAuth, requireAdmin, csrfGuard, cleanupSessions, enforceMfaSetup } = require('./auth');
+const { query } = require('./db');
 const { HttpError } = require('./util');
 const { EbError } = require('./eboekhouden');
 
@@ -38,11 +39,12 @@ app.get('/healthz', async (req, res) => {
 
 app.use('/api', express.json({ limit: '1mb' }), csrfGuard, loadUser);
 app.use('/api/auth', require('./routes/auth'));
-app.use('/api/timesheet', requireAuth, require('./routes/timesheet'));
-app.use('/api/approvals', requireAdmin, require('./routes/approvals'));
-app.use('/api/admin', requireAdmin, require('./routes/admin'));
-app.use('/api/invoicing', requireAdmin, require('./routes/invoicing'));
-app.use('/api/reports', requireAdmin, require('./routes/reports'));
+// Alles behalve /api/auth vereist dat een beheerder 2FA heeft ingesteld.
+app.use('/api/timesheet', requireAuth, enforceMfaSetup, require('./routes/timesheet'));
+app.use('/api/approvals', requireAdmin, enforceMfaSetup, require('./routes/approvals'));
+app.use('/api/admin', requireAdmin, enforceMfaSetup, require('./routes/admin'));
+app.use('/api/invoicing', requireAdmin, enforceMfaSetup, require('./routes/invoicing'));
+app.use('/api/reports', requireAdmin, enforceMfaSetup, require('./routes/reports'));
 app.use('/api', (req, res, next) => next(new HttpError(404, 'Onbekend endpoint')));
 
 // Altijd laten controleren of er een nieuwe versie is (ETag), zodat een deploy direct zichtbaar is.
@@ -59,7 +61,7 @@ app.use((err, req, res, next) => {
     console.warn('e-Boekhouden:', err.status, err.message, err.body ? JSON.stringify(err.body) : '');
     return res.status(502).json({ error: `e-Boekhouden: ${err.message}`, details: err.body || null });
   }
-  if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
+  if (err instanceof HttpError) return res.status(err.status).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
   if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Ongeldige JSON' });
   console.error(err);
   res.status(500).json({ error: 'Er ging iets mis op de server' });
@@ -68,6 +70,16 @@ app.use((err, req, res, next) => {
 (async () => {
   await migrate();
   await seedAdmin();
+  // Noodknop: 2FA van één account resetten, bijvoorbeeld als je telefoon en herstelcodes kwijt zijn.
+  // Zet MFA_RESET_EMAIL in Render, deploy, log in en stel opnieuw in, en verwijder de variabele daarna weer.
+  if (process.env.MFA_RESET_EMAIL) {
+    const { rowCount } = await query(
+      `UPDATE users SET totp_enabled = FALSE, totp_secret = NULL, totp_pending_secret = NULL, totp_last_step = NULL,
+              recovery_codes = NULL WHERE email = $1 AND totp_enabled`,
+      [process.env.MFA_RESET_EMAIL.toLowerCase().trim()]
+    );
+    console.warn(`MFA_RESET_EMAIL: tweestapsverificatie ${rowCount ? 'gereset' : 'niet gevonden of al uit'} voor ${process.env.MFA_RESET_EMAIL}. Verwijder deze variabele weer.`);
+  }
   setInterval(() => cleanupSessions().catch((e) => console.error(e)), 6 * 60 * 60 * 1000).unref();
   const port = Number(process.env.PORT || 3000);
   app.listen(port, () => console.log(`Coretic uren draait op poort ${port}`));

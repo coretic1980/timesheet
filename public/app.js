@@ -78,11 +78,18 @@
     const isJson = (res.headers.get('content-type') || '').includes('json');
     const data = isJson ? await res.json() : await res.text();
     if (!res.ok) {
-      if (res.status === 401 && path !== '/auth/login' && state.user) {
+      if (res.status === 401 && !path.startsWith('/auth/') && state.user) {
         state.user = null;
         render();
       }
-      throw new Error((data && data.error) || `Fout ${res.status}`);
+      if (res.status === 403 && data && data.code === 'MFA_SETUP_REQUIRED' && state.user && !state.user.mfa_setup_required) {
+        state.user.mfa_setup_required = true;
+        render();
+      }
+      const err = new Error((data && data.error) || `Fout ${res.status}`);
+      err.status = res.status;
+      err.data = data;
+      throw err;
     }
     return data;
   }
@@ -224,6 +231,7 @@
 
   async function render() {
     if (!state.user) return renderLogin();
+    if (state.user.mfa_setup_required) return renderMfaSetupRequired();
     const { name, params } = currentRoute();
     const route = ROUTES[name];
     if (route.admin && state.user.role !== 'admin') {
@@ -275,15 +283,191 @@
       const err = form.querySelector('.notice');
       err.hidden = true;
       try {
-        state.user = await api('/auth/login', {
+        const res = await api('/auth/login', {
           method: 'POST', body: { email: form.email.value, password: form.password.value },
         });
+        if (res.mfa_required) { renderMfaCode(); return; }
+        state.user = res;
         render();
       } catch (ex) {
         err.textContent = ex.message;
         err.hidden = false;
       }
     });
+  }
+
+  /* ---------- Tweestapsverificatie ---------- */
+
+  // Stap 2 bij inloggen: code uit de authenticator-app (of een herstelcode).
+  function renderMfaCode() {
+    document.title = 'Code invullen – Coretic uren';
+    app.innerHTML = `
+      <div class="login">
+        <div class="panel">
+          <h1>Tweestapsverificatie</h1>
+          <p class="muted" data-hint>Vul de 6-cijferige code in uit je authenticator-app.</p>
+          <form id="mfa-form">
+            <label class="field" data-label>Code
+              <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]*" required class="code-input"></label>
+            <div class="notice error" hidden></div>
+            <button class="btn primary" type="submit">Inloggen</button>
+            <div class="row spread small">
+              <button type="button" class="btn ghost small" data-recovery>Herstelcode gebruiken</button>
+              <button type="button" class="btn ghost small" data-cancel>Annuleren</button>
+            </div>
+          </form>
+        </div>
+      </div>`;
+    const form = document.getElementById('mfa-form');
+    form.code.focus();
+    let recovery = false;
+    form.querySelector('[data-recovery]').addEventListener('click', (e) => {
+      recovery = !recovery;
+      form.code.value = '';
+      form.code.maxLength = recovery ? 20 : 6;
+      form.code.inputMode = recovery ? 'text' : 'numeric';
+      form.code.removeAttribute('pattern');
+      form.code.autocomplete = recovery ? 'off' : 'one-time-code';
+      form.querySelector('[data-hint]').textContent = recovery
+        ? 'Vul een van je herstelcodes in (bijvoorbeeld abcde-fghjk). Elke code werkt één keer.'
+        : 'Vul de 6-cijferige code in uit je authenticator-app.';
+      e.target.textContent = recovery ? 'Code uit de app gebruiken' : 'Herstelcode gebruiken';
+      form.code.focus();
+    });
+    form.querySelector('[data-cancel]').addEventListener('click', async () => {
+      await api('/auth/logout', { method: 'POST' }).catch(() => {});
+      renderLogin();
+    });
+    form.code.addEventListener('input', () => {
+      if (!recovery && /^\d{6}$/.test(form.code.value)) form.requestSubmit();
+    });
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = form.querySelector('.notice');
+      err.hidden = true;
+      try {
+        state.user = await api('/auth/mfa/verify', { method: 'POST', body: { code: form.code.value } });
+        render();
+        if (state.user.recovery_codes_left !== undefined) {
+          toast(`Herstelcode gebruikt. Je hebt er nog ${state.user.recovery_codes_left}. Maak nieuwe aan onder Account.`, state.user.recovery_codes_left < 3);
+        }
+      } catch (ex) {
+        if (ex.status === 401) { renderLogin(); toast(ex.message, true); return; }
+        err.textContent = ex.message;
+        err.hidden = false;
+        form.code.select();
+      }
+    });
+  }
+
+  let qrPromise = null;
+  function loadQr() {
+    if (window.QRCode) return Promise.resolve(window.QRCode);
+    if (!qrPromise) {
+      qrPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+        s.onload = () => (window.QRCode ? resolve(window.QRCode) : reject(new Error('QR')));
+        s.onerror = () => { qrPromise = null; reject(new Error('QR')); };
+        document.head.appendChild(s);
+      });
+    }
+    return qrPromise;
+  }
+
+  function recoveryCodesHTML(codes) {
+    return `
+      <div class="notice warn"><strong>Bewaar deze herstelcodes op een veilige plek</strong> (bijvoorbeeld je wachtwoordmanager). Elke code werkt één keer, voor als je je telefoon kwijt bent. Je ziet ze maar één keer.</div>
+      <pre class="recovery-codes">${codes.map(esc).join('\n')}</pre>
+      <div class="row"><button type="button" class="btn" data-copy-codes>Kopiëren</button></div>`;
+  }
+  function bindCopyCodes(box, codes) {
+    const b = box.querySelector('[data-copy-codes]');
+    if (b) {
+      b.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(codes.join('\n')); toast('Herstelcodes gekopieerd'); } catch { toast('Kopiëren lukte niet; selecteer de codes handmatig', true); }
+      });
+    }
+  }
+
+  // Instellen: QR-code scannen, eerste code invullen, herstelcodes bewaren. onDone wordt na "Klaar" aangeroepen.
+  async function mountMfaSetup(box, onDone) {
+    box.innerHTML = '<p class="muted">Bezig…</p>';
+    const setup = await api('/auth/mfa/setup', { method: 'POST' });
+    const pretty = setup.secret.replace(/(.{4})/g, '$1 ').trim();
+    box.innerHTML = `
+      <ol class="mfa-steps">
+        <li>Installeer een authenticator-app op je telefoon, bijvoorbeeld Microsoft Authenticator, Google Authenticator of 1Password.</li>
+        <li>Scan deze QR-code met de app.
+          <div class="mfa-qr" data-qr></div>
+          <details><summary class="small">Kun je niet scannen? Voer de sleutel handmatig in</summary>
+            <p class="small">Sleutel: <code class="mfa-secret">${esc(pretty)}</code><br><span class="muted">Type: op tijd gebaseerd, 6 cijfers</span></p></details>
+        </li>
+        <li>Vul de code in die de app nu laat zien.
+          <form class="row" data-enable style="margin-top:0.5rem">
+            <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" class="code-input" required aria-label="Code uit de app">
+            <button class="btn primary" type="submit">Inschakelen</button>
+          </form>
+          <p class="err small" hidden></p>
+        </li>
+      </ol>`;
+    loadQr().then((QRCode) => {
+      const el = box.querySelector('[data-qr]');
+      if (!el) return;
+      // eslint-disable-next-line no-new
+      new QRCode(el, { text: setup.otpauth, width: 180, height: 180, correctLevel: QRCode.CorrectLevel.M });
+    }).catch(() => {
+      const el = box.querySelector('[data-qr]');
+      if (el) el.innerHTML = '<p class="muted small">QR-code kon niet worden geladen; voer de sleutel hieronder handmatig in.</p>';
+    });
+    const form = box.querySelector('[data-enable]');
+    form.code.focus();
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = box.querySelector('.err');
+      err.hidden = true;
+      try {
+        const res = await api('/auth/mfa/enable', { method: 'POST', body: { code: form.code.value } });
+        box.innerHTML = `
+          <p><strong>Tweestapsverificatie staat aan.</strong> Voortaan vraagt de app na je wachtwoord om een code uit je authenticator-app.</p>
+          ${recoveryCodesHTML(res.recovery_codes)}
+          <label class="check"><input type="checkbox" data-saved> Ik heb de herstelcodes bewaard</label>
+          <div class="row"><button type="button" class="btn primary" data-done disabled>Klaar</button></div>`;
+        bindCopyCodes(box, res.recovery_codes);
+        const done = box.querySelector('[data-done]');
+        box.querySelector('[data-saved]').addEventListener('change', (ev) => { done.disabled = !ev.target.checked; });
+        done.addEventListener('click', () => onDone(res.user));
+      } catch (ex) {
+        err.textContent = ex.message;
+        err.hidden = false;
+        form.code.select();
+      }
+    });
+  }
+
+  // Verplicht instelscherm voor beheerders zonder 2FA.
+  function renderMfaSetupRequired() {
+    document.title = 'Tweestapsverificatie instellen – Coretic uren';
+    app.innerHTML = `
+      <div class="login">
+        <div class="panel mfa-panel">
+          <h1>Tweestapsverificatie instellen</h1>
+          <p class="muted">Voor beheerders is een tweede stap bij het inloggen verplicht, omdat je facturen kunt maken en versturen. Dit duurt één minuut.</p>
+          <div data-mfa-box></div>
+          <div class="row spread small" style="margin-top:1rem"><span class="muted">Ingelogd als ${esc(state.user.email)}</span>
+            <button type="button" class="btn ghost small" data-logout>Uitloggen</button></div>
+        </div>
+      </div>`;
+    app.querySelector('[data-logout]').addEventListener('click', async () => {
+      await api('/auth/logout', { method: 'POST' }).catch(() => {});
+      state.user = null;
+      render();
+    });
+    mountMfaSetup(app.querySelector('[data-mfa-box]'), (user) => {
+      state.user = user;
+      toast('Tweestapsverificatie staat aan');
+      render();
+    }).catch((e) => toast(e.message, true));
   }
 
   /* ================= Urenstaat ================= */
@@ -1775,12 +1959,13 @@
       <section class="panel">
         <div class="panel-pad row spread"><h2>Medewerkers</h2><button class="btn primary" data-new>Medewerker toevoegen</button></div>
         <div class="table-wrap"><table class="data">
-          <thead><tr><th>Naam</th><th>E-mailadres</th><th>Rol</th><th class="num">Uren per week</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Naam</th><th>E-mailadres</th><th>Rol</th><th class="num">Uren per week</th><th>2FA</th><th>Status</th><th></th></tr></thead>
           <tbody>${users.map((u) => `
             <tr>
               <td>${esc(u.name)}</td><td>${esc(u.email)}</td>
               <td>${u.role === 'admin' ? 'Beheerder' : 'Medewerker'}</td>
               <td class="num">${fh(u.weekly_hours)}</td>
+              <td>${u.totp_enabled ? '<span class="badge approved">Aan</span>' : (u.role === 'admin' ? '<span class="badge submitted">Nog instellen</span>' : '<span class="muted">Uit</span>')}</td>
               <td>${u.active ? 'Actief' : '<span class="muted">Inactief</span>'}</td>
               <td class="right"><button class="btn small" data-edit="${u.id}">Wijzigen</button></td>
             </tr>`).join('')}</tbody>
@@ -1806,7 +1991,22 @@
       const u = users.find((x) => x.id === Number(b.dataset.edit));
       openDialog({
         title: `${u.name} wijzigen`,
-        body: userForm(u),
+        body: userForm(u) + (u.totp_enabled ? `
+          <div class="notice"><strong>Tweestapsverificatie staat aan.</strong> Telefoon kwijt en geen herstelcodes meer?
+            <div style="margin-top:0.5rem"><button type="button" class="btn small danger" data-mfa-reset>2FA resetten</button></div></div>` : ''),
+        onOpen: (form) => {
+          const b = form.querySelector('[data-mfa-reset]');
+          if (!b) return;
+          b.addEventListener('click', async () => {
+            if (!(await confirmDialog('2FA resetten', `De tweestapsverificatie van ${esc(u.name)} wordt uitgezet en alle sessies worden afgemeld.${u.role === 'admin' ? ' Bij de volgende keer inloggen moet het opnieuw worden ingesteld.' : ''}`, '2FA resetten', true))) return;
+            try {
+              await api(`/admin/users/${u.id}/mfa-reset`, { method: 'POST' });
+              toast(`2FA van ${u.name} gereset`);
+              form.closest('dialog').close();
+              if (u.id === state.user.id) { state.user.mfa_setup_required = state.user.role === 'admin'; render(); } else adminUsers(el);
+            } catch (ex) { toast(ex.message, true); }
+          });
+        },
         onSubmit: async (fd) => {
           const body = {
             name: fd.get('name'), role: fd.get('role'),
@@ -2853,7 +3053,9 @@
           <label class="field">Nieuw wachtwoord<span class="hint">Minstens 10 tekens</span><input type="password" name="next" autocomplete="new-password" minlength="10" required></label>
           <div><button class="btn primary" type="submit">Wachtwoord wijzigen</button></div>
         </form>
+        <section class="panel panel-pad stack" id="mfa"><h2>Tweestapsverificatie</h2><p class="muted">Laden…</p></section>
       </div>`;
+    renderMfaSection(view.querySelector('#mfa'));
     const form = view.querySelector('#pw');
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -2865,13 +3067,64 @@
     });
   }
 
+  async function renderMfaSection(box) {
+    const st = await api('/auth/mfa/status');
+    if (!st.totp_enabled) {
+      box.innerHTML = `
+        <h2>Tweestapsverificatie</h2>
+        <div data-intro>
+          <p>Staat <strong>uit</strong>. Met tweestapsverificatie heeft iemand met alleen je wachtwoord nog geen toegang: na het wachtwoord vraagt de app om een code uit je authenticator-app.</p>
+          <div><button class="btn primary" type="button" data-start>Inschakelen</button></div>
+        </div>
+        <div data-mfa-box></div>`;
+      box.querySelector('[data-start]').addEventListener('click', () => {
+        box.querySelector('[data-intro]').hidden = true;
+        mountMfaSetup(box.querySelector('[data-mfa-box]'), (user) => {
+          state.user = { ...state.user, ...user };
+          toast('Tweestapsverificatie staat aan');
+          renderMfaSection(box);
+        }).catch((ex) => toast(ex.message, true));
+      });
+      return;
+    }
+    box.innerHTML = `
+      <h2>Tweestapsverificatie</h2>
+      <p>Staat <strong>aan</strong>${st.required ? ' (verplicht voor beheerders)' : ''}. Je hebt nog <strong>${st.recovery_left}</strong> ${st.recovery_left === 1 ? 'herstelcode' : 'herstelcodes'}.</p>
+      ${st.recovery_left < 3 ? '<div class="notice warn">Je hebt bijna geen herstelcodes meer. Maak nieuwe aan.</div>' : ''}
+      <div class="row">
+        <button class="btn" type="button" data-new-codes>Nieuwe herstelcodes</button>
+        ${st.required ? '' : '<button class="btn danger" type="button" data-disable>Uitschakelen</button>'}
+      </div>
+      <div data-out></div>`;
+    const askCode = (title, submit, danger, after) => openDialog({
+      title, submit, danger,
+      body: '<label class="field">Huidige code uit je authenticator-app<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" class="code-input" required></label>',
+      onSubmit: async (fd) => after(fd.get('code')),
+    });
+    box.querySelector('[data-new-codes]').addEventListener('click', () => askCode('Nieuwe herstelcodes', 'Maak nieuwe codes', false, async (code) => {
+      const res = await api('/auth/mfa/recovery-codes', { method: 'POST', body: { code } });
+      const out = box.querySelector('[data-out]');
+      out.innerHTML = `<p class="small">Je oude herstelcodes werken niet meer.</p>${recoveryCodesHTML(res.recovery_codes)}`;
+      bindCopyCodes(out, res.recovery_codes);
+    }));
+    const dis = box.querySelector('[data-disable]');
+    if (dis) {
+      dis.addEventListener('click', () => askCode('Tweestapsverificatie uitschakelen', 'Uitschakelen', true, async (code) => {
+        await api('/auth/mfa/disable', { method: 'POST', body: { code } });
+        toast('Tweestapsverificatie staat uit');
+        renderMfaSection(box);
+      }));
+    }
+  }
+
   /* ================= Start ================= */
 
   (async () => {
     try {
       state.user = await api('/auth/me');
-    } catch {
+    } catch (e) {
       state.user = null;
+      if (e.data && e.data.mfa_required) { renderMfaCode(); return; }
     }
     render();
   })();

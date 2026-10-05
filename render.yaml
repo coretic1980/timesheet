@@ -24,3 +24,5 @@ services:
         sync: false
       - key: EB_SOURCE
         value: Coretic
+      - key: APP_SECRET
+        generateValue: true

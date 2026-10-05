@@ -11,12 +11,22 @@ CREATE TABLE IF NOT EXISTS users (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Tweestapsverificatie (TOTP)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT;          -- versleuteld
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_pending_secret TEXT;  -- versleuteld, tijdens instellen
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_last_step BIGINT;     -- voorkomt hergebruik van een code
+ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_codes TEXT[];     -- sha256-hashes
+
 CREATE TABLE IF NOT EXISTS sessions (
   token      TEXT PRIMARY KEY,               -- sha256 van het cookie-token
   user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   expires_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id);
+-- Sessie na wachtwoord maar vóór de 2FA-code (kort geldig, geeft geen toegang)
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS pending_mfa BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_attempts INT NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS clients (
   id               SERIAL PRIMARY KEY,

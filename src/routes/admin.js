@@ -6,7 +6,7 @@ const eb = require('../eboekhouden');
 
 const r = express.Router();
 
-const USER_COLS = 'id, email, name, role, weekly_hours, active, created_at';
+const USER_COLS = 'id, email, name, role, weekly_hours, active, created_at, totp_enabled';
 
 function checkPassword(pw) {
   if (String(pw).length < 10) throw new HttpError(400, 'Wachtwoord moet minstens 10 tekens zijn');
@@ -72,6 +72,19 @@ r.patch('/users/:id', ah(async (req, res) => {
   const { rows } = await query(...u.sql('users', id, USER_COLS));
   if (!rows[0]) throw new HttpError(404, 'Medewerker niet gevonden');
   if (b.active === false || b.password) await query('DELETE FROM sessions WHERE user_id = $1', [id]);
+  res.json(rows[0]);
+}));
+
+// 2FA van een medewerker resetten (telefoon kwijt). De medewerker stelt het bij de volgende keer opnieuw in.
+r.post('/users/:id/mfa-reset', ah(async (req, res) => {
+  const id = intParam(req.params.id);
+  const { rows } = await query(
+    `UPDATE users SET totp_enabled = FALSE, totp_secret = NULL, totp_pending_secret = NULL, totp_last_step = NULL,
+            recovery_codes = NULL WHERE id = $1 RETURNING ${USER_COLS}`,
+    [id]
+  );
+  if (!rows[0]) throw new HttpError(404, 'Medewerker niet gevonden');
+  await query('DELETE FROM sessions WHERE user_id = $1', [id]);
   res.json(rows[0]);
 }));
 
