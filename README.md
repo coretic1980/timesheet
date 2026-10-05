@@ -26,6 +26,13 @@ Stack: Node 20 + Express, Postgres (Neon) en een frontend zonder build-stap. De 
   - CSV-export (puntkomma, decimale komma)
 - **Projecten importeren** uit de export van e-Boekhouden (Uren › Configuratie › Projecten), of uit een eigen Excel- of CSV-bestand met de kolommen Project en Relatie. Ontbrekende klanten worden aangemaakt, projecten van je eigen bedrijf worden intern, en projecten die al bestaan worden overgeslagen. Tarieven staan niet in de export; projecten zonder tarief krijgen het label "Tarief ontbreekt".
 - **Activiteiten:** activiteiten beheer je centraal met een standaardtarief, en per project kies je welke activiteiten erbij horen, eventueel met een afwijkend tarief. Medewerkers schrijven uren op project + activiteit. In het raster is elke combinatie een eigen regel. Elk actief project waaraan je bent toegewezen staat er altijd in, met een regel per actieve activiteit. De activiteit komt op de factuurregel.
+- **Uren importeren** (Beheer › Uren importeren) uit de export van de geregistreerde uren in e-Boekhouden. Zo werkt het:
+  - Per medewerker uit de export kies je de gebruiker in de app.
+  - Projecten en activiteiten worden op naam gekoppeld, dus importeer die eerst.
+  - Regels op dezelfde dag, hetzelfde project en dezelfde activiteit worden samengevoegd.
+  - Uren t/m een gekozen datum worden "gefactureerd" (niet opnieuw te factureren); latere uren worden "goedgekeurd".
+  - Bestaande uren worden overgeslagen, dus opnieuw importeren is veilig.
+  - Kilometers worden niet geïmporteerd.
 - **Opmaak factuurregel** met dezelfde codes als in e-Boekhouden: `[DATUM]`, `[PROJECT]`, `[ACTIVITEIT]`, `[OPMERKING]`, plus `[PROJECTCODE]` en `[MEDEWERKER]`. Standaard staat er `[DATUM] | [ACTIVITEIT] | [OPMERKING]` met één regel per uurregel. Samengevoegd (één regel per project, activiteit en medewerker, met datumbereik) kan ook. Beide stel je globaal in onder Koppeling en per klant onder Klanten.
 - **Factuur direct mailen:** e-Boekhouden mailt de factuur naar het factuur-e-mailadres van de relatie, met het onderwerp en de tekst uit Koppeling (codes `[KLANT]` en `[PERIODE]`). Dit zet je per factuur aan of uit.
 - **Tariefvolgorde** bij goedkeuring:

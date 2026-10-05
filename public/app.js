@@ -781,6 +781,7 @@
     let label = 'Nog leeg';
     if (editable) label = 'Nog niet ingediend';
     else if (submitted) label = 'Wacht op goedkeuring';
+    else if (entries.length && entries.every((e) => e.status === 'invoiced')) label = 'Gefactureerd';
     else if (entries.length) label = 'Goedgekeurd';
     const total = entries.reduce((s, e) => s + e.hours, 0);
     const isThisWeek = data.week_start === weekStart(todayIso());
@@ -1347,7 +1348,7 @@
 
   /* ================= Beheer ================= */
 
-  const ADMIN_TABS = { medewerkers: 'Medewerkers', klanten: 'Klanten', projecten: 'Projecten', activiteiten: 'Activiteiten', koppeling: 'Koppeling e-Boekhouden' };
+  const ADMIN_TABS = { medewerkers: 'Medewerkers', klanten: 'Klanten', projecten: 'Projecten', activiteiten: 'Activiteiten', import: 'Uren importeren', koppeling: 'Koppeling e-Boekhouden' };
 
   async function viewAdmin(view, params) {
     const tab = ADMIN_TABS[params[0]] ? params[0] : 'medewerkers';
@@ -1358,7 +1359,7 @@
       <div id="tab"></div>`;
     view.querySelectorAll('[data-href]').forEach((b) => b.addEventListener('click', () => { location.hash = b.dataset.href; }));
     const el = view.querySelector('#tab');
-    await ({ medewerkers: adminUsers, klanten: adminClients, projecten: adminProjects, activiteiten: adminActivities, koppeling: adminEb })[tab](el);
+    await ({ medewerkers: adminUsers, klanten: adminClients, projecten: adminProjects, activiteiten: adminActivities, import: adminHoursImport, koppeling: adminEb })[tab](el);
   }
 
   function userForm(u = {}) {
@@ -1655,10 +1656,10 @@
 
   // Leest een export uit e-Boekhouden: bedrijfsgegevens bovenaan, daarna een kopregel met de gevraagde kolommen.
   // columns: { veld: 'Kolomnaam' }; de eerste kolom is verplicht per regel.
-  async function readExport(file, columns, hint) {
+  async function readExport(file, columns, hint, { raw = false } = {}) {
     const XLSX = await loadSheetJs();
     const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
-    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw, defval: '' });
     const wanted = Object.entries(columns);
     const required = wanted.slice(0, 2).map(([, label]) => normName(label));
     const hi = rows.findIndex((r) => required.every((col) => r.some((c) => normName(c) === col)));
@@ -1668,7 +1669,10 @@
     const firstKey = wanted[0][0];
     const firstText = rows.slice(0, hi).map((r) => r.find((c) => String(c).trim())).find(Boolean);
     const items = rows.slice(hi + 1)
-      .map((r) => Object.fromEntries(wanted.map(([key]) => [key, idx[key] >= 0 ? String(r[idx[key]] ?? '').trim() : ''])))
+      .map((r) => Object.fromEntries(wanted.map(([key]) => {
+        const v = idx[key] >= 0 ? r[idx[key]] : '';
+        return [key, raw && typeof v !== 'string' ? v : String(v ?? '').trim()];
+      })))
       .filter((x) => x[firstKey]);
     if (!items.length) throw new Error('Het bestand bevat geen regels onder de kopregel');
     return { company: firstText ? String(firstText).trim() : '', items };
@@ -1943,6 +1947,186 @@
         toast('Activiteiten opgeslagen');
         adminProjects(el);
       },
+    });
+  }
+
+  /* ---------- Uren importeren ---------- */
+
+  // Excel-datum (serienummer), Date-object of tekst (dd-mm-jjjj / jjjj-mm-dd) naar jjjj-mm-dd.
+  function parseDateCell(v) {
+    if (v instanceof Date && !Number.isNaN(v.getTime())) return `${v.getFullYear()}-${pad(v.getMonth() + 1)}-${pad(v.getDate())}`;
+    if (typeof v === 'number' && v > 20000 && v < 80000) return new Date(Math.round((v - 25569) * 86400000)).toISOString().slice(0, 10);
+    const s = String(v ?? '').trim();
+    let m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+    if (m) return `${m[3]}-${pad(m[2])}-${pad(m[1])}`;
+    m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+  }
+  const parseHoursCell = (v) => (typeof v === 'number' ? Math.round(v * 100) / 100 : parseHours(v));
+
+  async function adminHoursImport(el) {
+    const [users, projects, acts] = await Promise.all([api('/admin/users'), api('/admin/projects'), api('/admin/activities')]);
+    const key = (s) => String(s || '').trim().toLowerCase();
+    const projByName = new Map();
+    for (const p of projects) if (!projByName.has(key(p.name))) projByName.set(key(p.name), p);
+    const actByName = new Map(acts.map((x) => [key(x.name), x]));
+    const prevMonthEnd = monthBounds(-1).to;
+    let rows = null;
+    let mapping = {};
+    let fileName = '';
+
+    el.innerHTML = `
+      <section class="panel panel-pad stack" id="hours-import">
+        <h2>Uren importeren</h2>
+        <p class="muted small">Importeer eerder geschreven uren uit e-Boekhouden (export van de geregistreerde uren naar Excel). Importeer eerst de <a href="#/beheer/projecten">projecten</a> en <a href="#/beheer/activiteiten">activiteiten</a>, want de uren worden op naam aan projecten en activiteiten gekoppeld. Uren die al bestaan worden overgeslagen, dus je kunt hetzelfde bestand veilig opnieuw inlezen.</p>
+        <label class="field">Bestand<input type="file" name="file" accept=".xlsx,.xls,.csv"></label>
+        <div data-step></div>
+      </section>`;
+    const section = el.querySelector('#hours-import');
+    const step = section.querySelector('[data-step]');
+
+    function analyse() {
+      const invoicedThrough = section.querySelector('[name="invoiced_through"]').value;
+      const merged = new Map();
+      const problems = [];
+      for (const r of rows) {
+        const reason = !r.date ? 'Ongeldige datum'
+          : !(r.hours > 0) ? 'Geen uren (alleen kilometers)'
+            : !r.project ? 'Project niet gevonden'
+              : (r.activityName && !r.activity) ? 'Activiteit niet gevonden'
+                : !mapping[r.userKey] ? 'Kies een medewerker' : '';
+        if (reason) { problems.push({ ...r, reason }); continue; }
+        const k = `${mapping[r.userKey]}|${r.project.id}|${r.activity ? r.activity.id : 0}|${r.date}`;
+        const m = merged.get(k);
+        if (m) {
+          m.hours = Math.round((m.hours + r.hours) * 100) / 100;
+          if (r.note && !m.notes.includes(r.note)) m.notes.push(r.note);
+          m.mergedCount += 1;
+        } else {
+          merged.set(k, { ...r, userId: Number(mapping[r.userKey]), notes: r.note ? [r.note] : [], mergedCount: 1 });
+        }
+      }
+      const items = [...merged.values()].sort((x, y) => x.date.localeCompare(y.date));
+      for (const it of items) it.status = invoicedThrough && it.date <= invoicedThrough ? 'invoiced' : 'approved';
+      return { items, problems, invoicedThrough };
+    }
+
+    function renderStep() {
+      const userKeys = [...new Set(rows.map((r) => r.userKey))];
+      const userOpts = (sel) => opt('', 'Kies…', !sel) + users.filter((u) => u.active).map((u) => opt(u.id, `${u.name} (${u.email})`, String(u.id) === String(sel))).join('');
+      step.innerHTML = `
+        <p class="muted small">Ingelezen: ${esc(fileName)}, ${rows.length} regels.</p>
+        <h3>Medewerkers koppelen</h3>
+        <div class="table-wrap"><table class="data">
+          <thead><tr><th>In de export</th><th>Medewerker in de app</th></tr></thead>
+          <tbody>${userKeys.map((k) => `<tr><td>${esc(k || '(leeg)')}</td><td><select data-user-key="${esc(k)}">${userOpts(mapping[k])}</select></td></tr>`).join('')}</tbody>
+        </table></div>
+        <h3>Status</h3>
+        <div class="form-grid">
+          <label class="field">Al gefactureerd t/m<span class="hint">Uren t/m deze datum worden "gefactureerd" en komen niet meer op een factuur. Latere uren worden goedgekeurd en kun je hier factureren.</span>
+            <input type="date" name="invoiced_through" value="${prevMonthEnd}"></label>
+        </div>
+        <label class="check"><input type="checkbox" name="add_to_team" checked> Medewerkers toevoegen aan het team van de projecten (en ontbrekende activiteiten aan het project koppelen)</label>
+        <div data-preview></div>`;
+      step.querySelectorAll('[data-user-key]').forEach((s) => s.addEventListener('change', () => {
+        mapping[s.dataset.userKey] = s.value;
+        renderPreview();
+      }));
+      step.querySelector('[name="invoiced_through"]').addEventListener('change', renderPreview);
+      renderPreview();
+    }
+
+    function renderPreview() {
+      const box = step.querySelector('[data-preview]');
+      const { items, problems } = analyse();
+      const total = items.reduce((s, x) => s + x.hours, 0);
+      const inv = items.filter((x) => x.status === 'invoiced');
+      const merges = items.filter((x) => x.mergedCount > 1).length;
+      const userName = (id) => (users.find((u) => u.id === id) || {}).name || '';
+      box.innerHTML = `
+        <h3>Controleren</h3>
+        <p><strong>${items.length} ${items.length === 1 ? 'regel' : 'regels'} (${fh(total)} uur) worden geïmporteerd</strong>:
+          ${inv.length} als gefactureerd, ${items.length - inv.length} als goedgekeurd.${
+          merges ? ` ${merges} ${merges === 1 ? 'keer zijn' : 'keer zijn'} meerdere regels op dezelfde dag en activiteit samengevoegd.` : ''}</p>
+        ${problems.length ? `<div class="notice warn"><strong>${problems.length} ${problems.length === 1 ? 'regel wordt' : 'regels worden'} niet geïmporteerd.</strong>
+          ${[...new Set(problems.map((x) => x.reason))].map((reason) => {
+            const n = problems.filter((x) => x.reason === reason);
+            const names = [...new Set(n.map((x) => (reason.startsWith('Project') ? x.projectName : reason.startsWith('Activiteit') ? x.activityName : '')).filter(Boolean))];
+            return `<br>${esc(reason)}: ${n.length}${names.length ? ` (${names.slice(0, 5).map(esc).join(', ')}${names.length > 5 ? ', …' : ''})` : ''}`;
+          }).join('')}
+          ${problems.some((x) => x.reason.startsWith('Project') || x.reason.startsWith('Activiteit')) ? '<br>Importeer die eerst onder Projecten of Activiteiten en kies het bestand daarna opnieuw.' : ''}</div>` : ''}
+        ${items.length ? `<div class="table-wrap import-preview"><table class="data">
+          <thead><tr><th>Datum</th><th>Medewerker</th><th>Project / activiteit</th><th class="num">Uren</th><th>Opmerking</th><th>Status</th></tr></thead>
+          <tbody>${items.map((x) => `<tr>
+            <td class="nowrap">${fmtDate(x.date, true)}</td><td>${esc(userName(x.userId))}</td>
+            <td>${esc(x.project.name)}${x.activity ? `<br><span class="muted small">${esc(x.activity.name)}</span>` : ''}</td>
+            <td class="num">${fh(x.hours)}</td><td>${esc(x.notes.join('; '))}</td>
+            <td>${statusBadge(x.status)}</td></tr>`).join('')}</tbody>
+        </table></div>` : ''}
+        <div class="row"><button class="btn primary" type="button" data-run${items.length ? '' : ' disabled'}>Importeer ${items.length} ${items.length === 1 ? 'regel' : 'regels'}</button></div>`;
+      const run = box.querySelector('[data-run]');
+      run.addEventListener('click', async () => {
+        const ok = await confirmDialog('Uren importeren', `${items.length} regels (${fh(total)} uur) importeren? Uren die al bestaan worden overgeslagen.`, 'Importeren');
+        if (!ok) return;
+        run.disabled = true;
+        try {
+          const res = await api('/admin/hours/import', {
+            method: 'POST',
+            body: {
+              rows: items.map((x) => ({
+                user_id: x.userId, project_id: x.project.id, activity_id: x.activity ? x.activity.id : null,
+                work_date: x.date, hours: x.hours, description: x.notes.join('; ').slice(0, 1000),
+              })),
+              invoiced_through: section.querySelector('[name="invoiced_through"]').value || null,
+              add_to_team: section.querySelector('[name="add_to_team"]').checked,
+            },
+          });
+          toast(`${res.inserted} ${res.inserted === 1 ? 'regel' : 'regels'} (${fh(res.hours)} uur) geïmporteerd${res.skipped ? `, ${res.skipped} bestonden al` : ''}`);
+          section.querySelector('[name="file"]').value = ''; // zodat hetzelfde bestand opnieuw gekozen kan worden
+          box.insertAdjacentHTML('afterbegin', `<div class="notice">Klaar: ${res.inserted} regels geïmporteerd${res.skipped ? `, ${res.skipped} overgeslagen omdat ze al bestonden` : ''}${res.linked_activities ? `, ${res.linked_activities} activiteiten aan projecten gekoppeld` : ''}${res.team_added ? `, ${res.team_added} keer een medewerker aan een projectteam toegevoegd` : ''}. Bekijk ze onder <a href="#/rapportage">Rapportage</a> of in de urenstaat.</div>`);
+        } catch (e) {
+          toast(e.message, true);
+          run.disabled = false;
+        }
+      });
+    }
+
+    section.querySelector('[name="file"]').addEventListener('change', async (ev) => {
+      const file = ev.target.files[0];
+      if (!file) { step.innerHTML = ''; return; }
+      fileName = file.name;
+      step.innerHTML = '<p class="muted">Bestand lezen…</p>';
+      try {
+        const parsed = await readExport(file,
+          { date: 'Datum', user: 'Medewerker', project: 'Project', activity: 'Activiteit', note: 'Opmerkingen', hours: 'Aantal uren' },
+          'Geen kolommen "Datum" en "Medewerker" gevonden. Gebruik de export van de geregistreerde uren uit e-Boekhouden.',
+          { raw: true });
+        rows = parsed.items.map((it) => {
+          const projectName = String(it.project ?? '').trim();
+          const activityName = String(it.activity ?? '').trim();
+          return {
+            date: parseDateCell(it.date),
+            userKey: String(it.user ?? '').trim(),
+            projectName,
+            activityName,
+            project: projByName.get(key(projectName)) || null,
+            activity: activityName ? actByName.get(key(activityName)) || null : null,
+            note: String(it.note ?? '').trim(),
+            hours: parseHoursCell(it.hours),
+          };
+        });
+        // Medewerkers voorstellen: zelfde e-mailadres, anders als er maar één actieve gebruiker is die (of jij als beheerder).
+        mapping = {};
+        for (const k of new Set(rows.map((r) => r.userKey))) {
+          const exact = users.find((u) => u.email.toLowerCase() === k.toLowerCase());
+          const sameName = users.find((u) => normName(u.name).length > 2 && normName(k).includes(normName(u.name)));
+          mapping[k] = String((exact || sameName || (users.filter((u) => u.active).length === 1 ? users[0] : state.user)).id);
+        }
+        renderStep();
+      } catch (e) {
+        step.innerHTML = `<div class="notice error">${esc(e.message)}</div>`;
+      }
+      ev.target.value = ''; // zodat hetzelfde bestand opnieuw gekozen kan worden
     });
   }
 

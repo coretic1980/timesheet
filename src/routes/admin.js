@@ -1,7 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { query, tx, getEbSettings, setEbSettings } = require('../db');
-const { ah, HttpError, str, num, intParam, normName } = require('../util');
+const { ah, HttpError, str, num, intParam, isoDate, normName } = require('../util');
 const eb = require('../eboekhouden');
 
 const r = express.Router();
@@ -383,6 +383,68 @@ r.delete('/projects/:id/activities/:activityId', ah(async (req, res) => {
     intParam(req.params.id), intParam(req.params.activityId),
   ]);
   res.json({ ok: true });
+}));
+
+/* ---------- Uren importeren (historie uit e-Boekhouden) ---------- */
+
+// Rijen komen al gekoppeld binnen (user_id, project_id, activity_id); de server controleert ze.
+// Uren t/m invoiced_through worden 'gefactureerd' (niet opnieuw te factureren), latere 'goedgekeurd'.
+r.post('/hours/import', ah(async (req, res) => {
+  const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
+  if (!rows.length) throw new HttpError(400, 'Geen uren om te importeren');
+  if (rows.length > 20000) throw new HttpError(400, 'Maximaal 20.000 regels per import');
+  const invoicedThrough = req.body.invoiced_through ? isoDate(req.body.invoiced_through, 'datum') : null;
+  const addToTeam = req.body.add_to_team !== false;
+
+  const result = await tx(async (db) => {
+    const users = new Set((await db.query('SELECT id FROM users')).rows.map((x) => x.id));
+    const projects = new Set((await db.query('SELECT id FROM projects')).rows.map((x) => x.id));
+    const activities = new Set((await db.query('SELECT id FROM activities')).rows.map((x) => x.id));
+    const linked = new Set((await db.query('SELECT project_id, activity_id FROM project_activities')).rows.map((x) => `${x.project_id}|${x.activity_id}`));
+    const team = new Set((await db.query('SELECT project_id, user_id FROM assignments')).rows.map((x) => `${x.project_id}|${x.user_id}`));
+    const out = { inserted: 0, skipped: 0, hours: 0, linked_activities: 0, team_added: 0 };
+
+    for (const [i, row] of rows.entries()) {
+      const where = `regel ${i + 1}`;
+      const userId = intParam(row.user_id, `medewerker (${where})`);
+      const projectId = intParam(row.project_id, `project (${where})`);
+      const activityId = row.activity_id ? intParam(row.activity_id, `activiteit (${where})`) : null;
+      if (!users.has(userId) || !projects.has(projectId) || (activityId && !activities.has(activityId))) {
+        throw new HttpError(400, `Onbekende medewerker, project of activiteit in ${where}`);
+      }
+      const date = isoDate(row.work_date, `datum (${where})`);
+      const hours = num(row.hours, { min: 0.01, max: 24, name: `aantal uren (${where})` });
+      const description = str(row.description, { name: 'Omschrijving', max: 1000, required: false });
+
+      if (activityId && !linked.has(`${projectId}|${activityId}`)) {
+        await db.query('INSERT INTO project_activities (project_id, activity_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [projectId, activityId]);
+        linked.add(`${projectId}|${activityId}`);
+        out.linked_activities += 1;
+      }
+      if (addToTeam && !team.has(`${projectId}|${userId}`)) {
+        await db.query('INSERT INTO assignments (project_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [projectId, userId]);
+        team.add(`${projectId}|${userId}`);
+        out.team_added += 1;
+      }
+
+      const status = invoicedThrough && date <= invoicedThrough ? 'invoiced' : 'approved';
+      const ins = await db.query(
+        `INSERT INTO time_entries (user_id, project_id, activity_id, work_date, hours, description, status, approved_by, approved_at, rate)
+         VALUES ($1, $2, $3::int, $4, $5, $6, $7, $8, now(), COALESCE(
+           (SELECT pa.rate FROM project_activities pa WHERE pa.project_id = $2 AND pa.activity_id = $3::int),
+           (SELECT a.rate FROM assignments a WHERE a.project_id = $2 AND a.user_id = $1),
+           (SELECT ac.default_rate FROM activities ac WHERE ac.id = $3::int),
+           (SELECT p.default_rate FROM projects p WHERE p.id = $2)))
+         ON CONFLICT (user_id, project_id, (COALESCE(activity_id, 0)), work_date) DO NOTHING
+         RETURNING id`,
+        [userId, projectId, activityId, date, hours, description, status, req.user.id]
+      );
+      if (ins.rowCount) { out.inserted += 1; out.hours += hours; } else out.skipped += 1;
+    }
+    out.hours = Math.round(out.hours * 100) / 100;
+    return out;
+  });
+  res.json(result);
 }));
 
 r.get('/projects/:id/assignments', ah(async (req, res) => {
