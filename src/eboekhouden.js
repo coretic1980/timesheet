@@ -152,6 +152,8 @@ module.exports = {
   ledgers: () => listAll('/v1/ledger'),
   invoiceTemplates: () => listAll('/v1/invoicetemplate'),
   units: () => listAll('/v1/unit'),
+  emailTemplates: () => listAll('/v1/emailtemplate'),
+  invoices: () => listAll('/v1/invoice'),
   findRelationByCode,
   getRelation: (id) => request('GET', `/v1/relation/${id}`),
   createRelation: (body) => request('POST', '/v1/relation', { body }),

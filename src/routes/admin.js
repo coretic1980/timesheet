@@ -1,7 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { query, tx, getEbSettings, setEbSettings } = require('../db');
-const { ah, HttpError, str, num, intParam, isoDate, normName } = require('../util');
+const { ah, HttpError, str, num, intParam, isoDate, normName, poFromName } = require('../util');
 const eb = require('../eboekhouden');
 
 const r = express.Router();
@@ -178,6 +178,7 @@ function projectFields(b, u) {
   if (b.client_id !== undefined) u.set('client_id', b.client_id ? intParam(b.client_id, 'klant') : null);
   if (b.name !== undefined) u.set('name', str(b.name, { name: 'Projectnaam', max: 200 }));
   if (b.code !== undefined) u.set('code', str(b.code, { name: 'Code', max: 30, required: false }) || null);
+  if (b.reference !== undefined) u.set('reference', str(b.reference, { name: 'PO / referentie', max: 50, required: false }) || null);
   if (b.default_rate !== undefined) u.set('default_rate', num(b.default_rate || 0, { min: 0, max: 10000, name: 'tarief' }));
   if (b.budget_hours !== undefined) u.set('budget_hours', num(b.budget_hours, { min: 0, max: 100000, name: 'budget', allowNull: true }));
   if (b.billable !== undefined) u.set('billable', Boolean(b.billable) && Boolean(b.client_id !== null));
@@ -189,13 +190,14 @@ r.post('/projects', ah(async (req, res) => {
   const clientId = b.client_id ? intParam(b.client_id, 'klant') : null;
   const name = str(b.name, { name: 'Projectnaam', max: 200 });
   const code = str(b.code, { name: 'Code', max: 30, required: false }) || null;
+  const reference = str(b.reference, { name: 'PO / referentie', max: 50, required: false }) || null;
   const rate = num(b.default_rate || 0, { min: 0, max: 10000, name: 'tarief' });
   const budget = num(b.budget_hours, { min: 0, max: 100000, name: 'budget', allowNull: true });
   const billable = clientId ? b.billable !== false : false;
   const { rows } = await query(
-    `INSERT INTO projects (client_id, name, code, default_rate, budget_hours, billable)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [clientId, name, code, rate, budget, billable]
+    `INSERT INTO projects (client_id, name, code, reference, default_rate, budget_hours, billable)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [clientId, name, code, reference, rate, budget, billable]
   );
   res.status(201).json(rows[0]);
 }));
@@ -266,8 +268,8 @@ r.post('/projects/import', ah(async (req, res) => {
       if (existing.has(key)) { out.skipped += 1; continue; }
       existing.add(key);
       const project = (await db.query(
-        `INSERT INTO projects (client_id, name, default_rate, billable) VALUES ($1, $2, $3, $4) RETURNING id`,
-        [clientId, name, isInternal ? 0 : rate, !isInternal]
+        `INSERT INTO projects (client_id, name, reference, default_rate, billable) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [clientId, name, isInternal ? null : poFromName(name), isInternal ? 0 : rate, !isInternal]
       )).rows[0];
       if (addMe) {
         await db.query('INSERT INTO assignments (project_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [project.id, req.user.id]);
@@ -529,7 +531,15 @@ r.put('/settings', ah(async (req, res) => {
     emailDefault: Boolean(b.emailDefault),
     emailSubject: str(b.emailSubject, { name: 'Onderwerp', max: 200 }),
     emailBody: str(b.emailBody, { name: 'Tekst e-mail', max: 5000 }),
+    emailTemplateId: optInt(b.emailTemplateId, 'e-mailsjabloon'),
+    invoiceText: str(b.invoiceText, { name: 'Factuurtekst', max: 500, required: false }),
+    numberPrefix: str(b.numberPrefix, { name: 'Voorvoegsel factuurnummer', max: 10, required: false }),
+    numberDigits: num(b.numberDigits ?? 5, { min: 1, max: 10, name: 'aantal cijfers' }),
+    printDefault: Boolean(b.printDefault),
   };
+  if (value.numberPrefix && !/^[A-Za-z0-9-]*$/.test(value.numberPrefix)) {
+    throw new HttpError(400, 'Het voorvoegsel mag alleen letters, cijfers en een streepje bevatten');
+  }
   await setEbSettings(value);
   res.json(value);
 }));
@@ -589,7 +599,9 @@ r.post('/eb/test', ah(async (req, res) => {
 }));
 
 r.get('/eb/options', ah(async (req, res) => {
-  const [ledgers, templates, units] = await Promise.all([eb.ledgers(), eb.invoiceTemplates(), eb.units()]);
+  const [ledgers, templates, units, emailTemplates] = await Promise.all([
+    eb.ledgers(), eb.invoiceTemplates(), eb.units(), eb.emailTemplates().catch(() => []),
+  ]);
   res.json({
     ledgers: ledgers.map((l) => ({
       id: l.id,
@@ -598,6 +610,8 @@ r.get('/eb/options', ah(async (req, res) => {
       label: [l.code, l.description || l.name].filter(Boolean).join(' '),
     })),
     templates: templates.map((t) => ({ id: t.id, label: t.name || t.description || `Sjabloon ${t.id}` })),
+    emailTemplates: emailTemplates.filter((t) => t.useInvoice !== false)
+      .map((t) => ({ id: t.id, label: t.name || `E-mailsjabloon ${t.id}` })),
     // e-Boekhouden noemt eenheden in enkelvoud en meervoud, bijvoorbeeld "uur" / "uren".
     units: units.map((u) => {
       const one = u.singular || u.name || u.description || u.code;

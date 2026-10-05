@@ -7,7 +7,7 @@ const r = express.Router();
 
 const BILLABLE_SQL = (lock) => `
   SELECT e.id, e.hours, e.rate, e.work_date, e.description, e.user_id, u.name AS user_name,
-         e.project_id, p.name AS project_name, p.code AS project_code,
+         e.project_id, p.name AS project_name, p.code AS project_code, p.reference AS project_reference,
          e.activity_id, ac.name AS activity_name
     FROM time_entries e
     JOIN projects p ON p.id = e.project_id
@@ -15,6 +15,7 @@ const BILLABLE_SQL = (lock) => `
     LEFT JOIN activities ac ON ac.id = e.activity_id
    WHERE p.client_id = $1 AND p.billable AND e.status = 'approved' AND e.invoice_id IS NULL
      AND e.work_date BETWEEN $2 AND $3
+     AND ($4::int[] IS NULL OR p.id = ANY($4::int[]))
    ORDER BY e.work_date, p.name, ac.name NULLS FIRST, u.name
    ${lock ? 'FOR UPDATE OF e' : ''}`;
 
@@ -33,10 +34,11 @@ function lineSettings(client, s) {
   };
 }
 
-// Vult de codes in, zoals in e-Boekhouden: [DATUM] [PROJECT] [PROJECTCODE] [ACTIVITEIT] [OPMERKING] [MEDEWERKER].
+// Vult de codes in, zoals in e-Boekhouden: [DATUM] [PROJECT] [PROJECTCODE] [ACTIVITEIT] [OPMERKING] [MEDEWERKER],
+// plus [REFERENTIE] (PO van het project).
 // Lege codes laten geen losse scheidingstekens achter.
 function renderLine(format, vars) {
-  let out = format.replace(/\[(DATUM|PROJECTCODE|PROJECT|ACTIVITEIT|OPMERKING|MEDEWERKER)\]/gi, (m, k) => vars[k.toUpperCase()] || '');
+  let out = format.replace(/\[(DATUM|PROJECTCODE|PROJECT|ACTIVITEIT|OPMERKING|MEDEWERKER|REFERENTIE)\]/gi, (m, k) => vars[k.toUpperCase()] || '');
   out = out.replace(/\s*([|–,;/])\s*(?:[|–,;/]\s*)+/g, ' $1 ');
   out = out.replace(/^[\s|–,;/:]+|[\s|–,;/:]+$/g, '').replace(/\s{2,}/g, ' ');
   return out.slice(0, 1000);
@@ -60,7 +62,7 @@ function buildLines(entries, { mode, format }) {
         ids: [e.id], hours: e.hours, rate: e.rate, amount: round2(e.hours * e.rate),
         description: renderLine(format, {
           DATUM: fmtDateNl(e.work_date), PROJECT: e.project_name, PROJECTCODE: e.project_code,
-          ACTIVITEIT: e.activity_name, OPMERKING: e.description, MEDEWERKER: e.user_name,
+          ACTIVITEIT: e.activity_name, OPMERKING: e.description, MEDEWERKER: e.user_name, REFERENTIE: e.project_reference,
         }),
       };
     });
@@ -71,7 +73,7 @@ function buildLines(entries, { mode, format }) {
     const key = `${e.project_id}|${e.activity_id || 0}|${e.user_id}|${e.rate}`;
     if (!groups.has(key)) {
       groups.set(key, {
-        project_name: e.project_name, project_code: e.project_code, activity_name: e.activity_name,
+        project_name: e.project_name, project_code: e.project_code, project_reference: e.project_reference, activity_name: e.activity_name,
         user_name: e.user_name, rate: e.rate, hours: 0, first: e.work_date, last: e.work_date, ids: [], notes: [],
       });
     }
@@ -86,20 +88,59 @@ function buildLines(entries, { mode, format }) {
     ids: g.ids, hours: g.hours, rate: g.rate, amount: round2(g.hours * g.rate),
     description: renderLine(format, {
       DATUM: dateRange(g.first, g.last), PROJECT: g.project_name, PROJECTCODE: g.project_code,
-      ACTIVITEIT: g.activity_name, OPMERKING: g.notes.join('; '), MEDEWERKER: g.user_name,
+      ACTIVITEIT: g.activity_name, OPMERKING: g.notes.join('; '), MEDEWERKER: g.user_name, REFERENTIE: g.project_reference,
     }),
   }));
 }
 
-function fillMail(text, client, from, to) {
+const MONTHS = ['januari', 'februari', 'maart', 'april', 'mei', 'juni', 'juli', 'augustus', 'september', 'oktober', 'november', 'december'];
+// "september 2026", of "september t/m oktober 2026" als de periode meerdere maanden beslaat.
+function monthLabel(from, to) {
+  const [fy, fm] = from.split('-').map(Number);
+  const [ty, tm] = to.split('-').map(Number);
+  if (fy === ty && fm === tm) return `${MONTHS[fm - 1]} ${fy}`;
+  if (fy === ty) return `${MONTHS[fm - 1]} t/m ${MONTHS[tm - 1]} ${fy}`;
+  return `${MONTHS[fm - 1]} ${fy} t/m ${MONTHS[tm - 1]} ${ty}`;
+}
+
+// Codes in e-mail en factuurtekst: [KLANT] [PERIODE] [MAAND] [REFERENTIE].
+function fillMail(text, client, from, to, reference = '') {
   return String(text || '')
     .replace(/\[KLANT\]/gi, client.name)
-    .replace(/\[PERIODE\]/gi, dateRange(from, to));
+    .replace(/\[PERIODE\]/gi, dateRange(from, to))
+    .replace(/\[MAAND\]/gi, monthLabel(from, to))
+    .replace(/\[REFERENTIE\]/gi, reference || '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+const escRe = (t) => t.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
+
+// Volgend factuurnummer: hoogste nummer met hetzelfde voorvoegsel in e-Boekhouden (en in de app) + 1.
+async function nextInvoiceNumber(s) {
+  const prefix = s.numberPrefix || '';
+  const digits = Number(s.numberDigits) || 5;
+  const re = new RegExp(`^${escRe(prefix)}(\\d+)$`, 'i');
+  let max = 0;
+  let source = 'app';
+  try {
+    for (const inv of await eb.invoices()) {
+      const m = String(inv.invoiceNumber || '').match(re);
+      if (m) max = Math.max(max, Number(m[1]));
+    }
+    source = 'e-Boekhouden';
+  } catch { /* e-Boekhouden niet bereikbaar: alleen de facturen uit de app */ }
+  const own = (await query('SELECT eb_invoice_number FROM invoices WHERE eb_invoice_number IS NOT NULL')).rows;
+  for (const r of own) {
+    const m = String(r.eb_invoice_number).match(re);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return { number: `${prefix}${String(max + 1).padStart(digits, '0')}`, source };
 }
 
 const escHtml = (t) => t.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
 
-function buildInvoiceBody(client, lines, s, { from, to, reference, date, sendEmail }) {
+function buildInvoiceBody(client, lines, s, { from, to, reference, date, sendEmail, invoiceNumber, text, print }) {
   if (!client.eb_relation_id) throw new HttpError(400, 'Koppel deze klant eerst aan een relatie in e-Boekhouden (Beheer › Klanten)');
   if (!s.templateId || !s.revenueLedgerId) {
     throw new HttpError(400, 'Kies eerst een factuursjabloon en omzetrekening (Beheer › Koppeling)');
@@ -122,6 +163,10 @@ function buildInvoiceBody(client, lines, s, { from, to, reference, date, sendEma
     })),
   };
   if (reference) body.reference = reference;
+  if (invoiceNumber) body.invoiceNumber = invoiceNumber;
+  if (text) body.text = text;
+  if (print) body.print = true;
+  if (s.emailTemplateId) body.emailTemplateId = s.emailTemplateId;
   if (s.process) {
     body.mutation = {
       ledgerId: s.debtorLedgerId,
@@ -130,9 +175,10 @@ function buildInvoiceBody(client, lines, s, { from, to, reference, date, sendEma
   }
   if (sendEmail) {
     // e-Boekhouden mailt de factuur naar het factuur-e-mailadres van de relatie.
-    body.email = {
-      subject: fillMail(s.emailSubject, client, from, to).slice(0, 200),
-      body: escHtml(fillMail(s.emailBody, client, from, to)).split('\n').join('<br>'),
+    // Met een e-mailsjabloon uit e-Boekhouden komen onderwerp en tekst uit het sjabloon.
+    body.email = s.emailTemplateId ? {} : {
+      subject: fillMail(s.emailSubject, client, from, to, reference).slice(0, 200),
+      body: escHtml(fillMail(s.emailBody, client, from, to, reference)).split('\n').join('<br>'),
     };
   }
   return body;
@@ -142,6 +188,32 @@ const totals = (lines) => ({
   hours: round2(lines.reduce((s, l) => s + l.hours, 0)),
   total_excl: round2(lines.reduce((s, l) => s + l.amount, 0)),
 });
+
+// Optionele selectie van projecten (om per PO te factureren).
+function projectIds(v) {
+  if (v === undefined || v === null || v === '') return null;
+  const list = (Array.isArray(v) ? v : String(v).split(',')).map((x) => intParam(x, 'project'));
+  return list.length ? list : null;
+}
+
+// Projecten met factureerbare uren in de periode (los van de selectie), voor de keuze in het voorbeeld.
+async function billableProjects(clientId, from, to) {
+  const { rows } = await query(
+    `SELECT p.id, p.name, p.reference, sum(e.hours) AS hours, sum(e.hours * e.rate) AS amount
+       FROM time_entries e JOIN projects p ON p.id = e.project_id
+      WHERE p.client_id = $1 AND p.billable AND e.status = 'approved' AND e.invoice_id IS NULL
+        AND e.work_date BETWEEN $2 AND $3
+      GROUP BY p.id ORDER BY p.name`,
+    [clientId, from, to]
+  );
+  return rows.map((x) => ({ ...x, amount: round2(x.amount) }));
+}
+
+// Referentie: de PO('s) van de projecten op de factuur.
+function suggestReference(entries) {
+  const refs = [...new Set(entries.map((e) => e.project_reference).filter(Boolean))];
+  return { reference: refs.join(', ').slice(0, 50), references: refs };
+}
 
 async function loadClient(id) {
   const { rows } = await query('SELECT * FROM clients WHERE id = $1', [id]);
@@ -171,11 +243,19 @@ r.get('/preview', ah(async (req, res) => {
   const client = await loadClient(intParam(req.query.client_id, 'klant'));
   const settings = await getEbSettings();
   const ls = lineSettings(client, settings);
-  const entries = (await query(BILLABLE_SQL(false), [client.id, from, to])).rows;
+  const ids = projectIds(req.query.project_ids);
+  const entries = (await query(BILLABLE_SQL(false), [client.id, from, to, ids])).rows;
   const lines = buildLines(entries, ls);
   res.json({
     client, from, to, lines, ...totals(lines),
+    projects: await billableProjects(client.id, from, to),
+    selected_project_ids: ids,
+    ...suggestReference(entries),
     line_mode: ls.mode, line_format: ls.format, email_default: Boolean(settings.emailDefault),
+    email_template: Boolean(settings.emailTemplateId),
+    print_default: Boolean(settings.printDefault),
+    invoice_number: await nextInvoiceNumber(settings),
+    invoice_text: fillMail(settings.invoiceText, client, from, to, suggestReference(entries).reference),
   });
 }));
 
@@ -187,25 +267,30 @@ r.post('/create', ah(async (req, res) => {
   const settings = await getEbSettings();
   const ls = lineSettings(client, settings);
   const sendEmail = Boolean(req.body.send_email);
+  const ids = projectIds(req.body.project_ids);
+  const invoiceNumber = str(req.body.invoice_number, { name: 'Factuurnummer', max: 30, required: false });
+  if (invoiceNumber && !/\d$/.test(invoiceNumber)) throw new HttpError(400, 'Het factuurnummer moet op een cijfer eindigen');
+  const text = str(req.body.text, { name: 'Factuurtekst', max: 2000, required: false });
+  const print = Boolean(req.body.print);
 
   if (req.body.dry_run) {
-    const entries = (await query(BILLABLE_SQL(false), [client.id, from, to])).rows;
+    const entries = (await query(BILLABLE_SQL(false), [client.id, from, to, ids])).rows;
     if (!entries.length) throw new HttpError(400, 'Geen goedgekeurde, nog niet gefactureerde uren in deze periode');
     const lines = buildLines(entries, ls);
-    const body = buildInvoiceBody(client, lines, settings, { from, to, reference, date, sendEmail });
+    const body = buildInvoiceBody(client, lines, settings, { from, to, reference, date, sendEmail, invoiceNumber, text, print });
     return res.json({ dry_run: true, body, ...totals(lines) });
   }
 
   const result = await tx(async (db) => {
-    const entries = (await db.query(BILLABLE_SQL(true), [client.id, from, to])).rows;
+    const entries = (await db.query(BILLABLE_SQL(true), [client.id, from, to, ids])).rows;
     if (!entries.length) throw new HttpError(400, 'Geen goedgekeurde, nog niet gefactureerde uren in deze periode');
     const lines = buildLines(entries, ls);
-    const body = buildInvoiceBody(client, lines, settings, { from, to, reference, date, sendEmail });
+    const body = buildInvoiceBody(client, lines, settings, { from, to, reference, date, sendEmail, invoiceNumber, text, print });
     const sum = totals(lines);
 
     const created = await eb.createInvoice(body);
     const ebId = created && (created.id || created.invoiceId);
-    let number = created && created.invoiceNumber;
+    let number = (created && created.invoiceNumber) || invoiceNumber || null;
     let pdf = created && created.urlPdfFile;
     if (ebId && (!number || !pdf)) {
       try {

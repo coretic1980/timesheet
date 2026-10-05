@@ -35,7 +35,16 @@ Stack: Node 20 + Express, Postgres (Neon) en een frontend zonder build-stap. De 
   - Uren t/m een gekozen datum worden "gefactureerd" (niet opnieuw te factureren); latere uren worden "goedgekeurd".
   - Bestaande uren worden overgeslagen, dus opnieuw importeren is veilig.
   - Kilometers worden niet geïmporteerd.
+- **PO / referentie per project:** wordt automatisch de referentie op de factuur.
+  - Bij het importeren haalt de app het PO-nummer uit de projectnaam ("PO 5473-1", "POR10-128179").
+  - Bij het factureren kies je welke projecten op de factuur komen, zodat je per PO factureert. Staan er meerdere PO's op één factuur, dan waarschuwt de app.
+  - Met de code `[REFERENTIE]` zet je de PO ook op elke factuurregel.
 - **Opmaak factuurregel** met dezelfde codes als in e-Boekhouden: `[DATUM]`, `[PROJECT]`, `[ACTIVITEIT]`, `[OPMERKING]`, plus `[PROJECTCODE]` en `[MEDEWERKER]`. Standaard staat er `[DATUM] | [ACTIVITEIT] | [OPMERKING]` met één regel per uurregel. Samengevoegd (één regel per project, activiteit en medewerker, met datumbereik) kan ook. Beide stel je globaal in onder Koppeling en per klant onder Klanten.
+- **Factuurnummer, factuurtekst en verzending** (Beheer › Koppeling › Factuur):
+  - **Factuurnummer:** voorvoegsel plus vast aantal cijfers (bijv. F00035). Bij elke factuur stelt de app het volgende vrije nummer voor: het hoogste nummer met dat voorvoegsel in e-Boekhouden plus één.
+  - **Factuurtekst** met codes [MAAND], [PERIODE], [KLANT] en [REFERENTIE]; standaard "Factuur periode [MAAND]".
+  - **Klaarzetten voor verzending per post.**
+  - **E-mailsjabloon:** kies een sjabloon uit e-Boekhouden voor het mailen.
 - **Factuur direct mailen:** e-Boekhouden mailt de factuur naar het factuur-e-mailadres van de relatie, met het onderwerp en de tekst uit Koppeling (codes `[KLANT]` en `[PERIODE]`). Dit zet je per factuur aan of uit.
 - **Budgetten per activiteit:** per project stel je per activiteit een budget in uren en/of euro's in (Projecten › Activiteiten).
   - In de urenstaat staat bij elke regel een budgetbalk met het verbruik ("38 / 120 uur"). Groen: 50–100% van het budget over, oranje: 25–50% over, rood: minder dan 25% over of overschreden. De balk loopt live mee; in Rapportage worden dezelfde kleuren gebruikt.

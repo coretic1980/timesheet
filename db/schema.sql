@@ -67,6 +67,9 @@ CREATE TABLE IF NOT EXISTS project_activities (
   PRIMARY KEY (project_id, activity_id)
 );
 
+-- PO-nummer / referentie per project (wordt de factuurreferentie)
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS reference TEXT;
+
 -- Budget per activiteit op een project (uren en/of bedrag excl. btw)
 ALTER TABLE project_activities ADD COLUMN IF NOT EXISTS budget_hours NUMERIC(8,2);
 ALTER TABLE project_activities ADD COLUMN IF NOT EXISTS budget_amount NUMERIC(12,2);

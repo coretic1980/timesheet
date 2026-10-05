@@ -80,9 +80,16 @@ function fmtDateNl(iso) {
 const round2 = (n) => Math.round(n * 100) / 100;
 
 // Namen vergelijken zonder hoofdletters, leestekens en rechtsvorm: "Aiden Netherlands B.V." = "aiden netherlands bv".
+// PO-nummer uit een projectnaam halen: "Discover & Enhance : PO 5473-1" -> "PO 5473-1", "POC - POR10-128179" -> "POR10-128179".
+function poFromName(name) {
+  const m = String(name || '').match(/\b(POR?)\s*:?\s*([A-Z0-9][A-Z0-9-]*\d[A-Z0-9-]*)/i);
+  if (!m) return null;
+  return m[1].toUpperCase() === 'POR' && !/\s|:/.test(m[0].slice(3, 4)) ? `${m[1].toUpperCase()}${m[2]}` : `${m[1].toUpperCase()} ${m[2]}`;
+}
+
 const normName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/(bv|nv|vof)$/, '');
 
 module.exports = {
   HttpError, ah, isoDate, addDays, todayIso, weekRange, workdaysBetween,
-  num, str, intParam, idList, fmtDateNl, round2, normName,
+  num, str, intParam, idList, fmtDateNl, round2, normName, poFromName,
 };

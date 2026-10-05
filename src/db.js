@@ -69,6 +69,11 @@ const EB_DEFAULTS = {
   lineMode: 'entry',                                   // 'entry' = één regel per uurregel, 'grouped' = samengevoegd
   lineFormat: '[DATUM] | [ACTIVITEIT] | [OPMERKING]',
   emailDefault: false,
+  emailTemplateId: null,                               // e-mailsjabloon uit e-Boekhouden (leeg = eigen tekst)
+  invoiceText: 'Factuur periode [MAAND]',
+  numberPrefix: 'F',
+  numberDigits: 5,
+  printDefault: false,
   emailSubject: 'Factuur [KLANT] [PERIODE]',
   emailBody: 'Beste relatie,\n\nHierbij ontvangt u de factuur voor de uren over [PERIODE].\n\nMet vriendelijke groet,\nDVN Technology BV',
 };

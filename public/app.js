@@ -1506,43 +1506,82 @@
     }));
   }
 
-  async function showInvoicePreview(view, clientId) {
+  // projectIds: null = alle projecten van de klant met uren in de periode.
+  async function showInvoicePreview(view, clientId, projectIds = null) {
     const { from, to } = state.invoicePeriod;
     const box = view.querySelector('#preview');
     box.innerHTML = '<p class="muted">Factuur voorbereiden…</p>';
     try {
-      const p = await api(`/invoicing/preview?client_id=${clientId}&from=${from}&to=${to}`);
+      const q = projectIds ? `&project_ids=${projectIds.join(',')}` : '';
+      const p = await api(`/invoicing/preview?client_id=${clientId}&from=${from}&to=${to}${q}`);
+      const selected = new Set(projectIds || p.projects.map((x) => x.id));
+      const multiPo = p.references.length > 1;
+      const projectPicker = p.projects.length > 1 ? `
+        <div class="stack">
+          <h3>Projecten op deze factuur</h3>
+          <div class="table-wrap"><table class="data">
+            <thead><tr><th></th><th>Project</th><th>PO / referentie</th><th class="num">Uren</th><th class="num">Bedrag</th><th></th></tr></thead>
+            <tbody>${p.projects.map((x) => `
+              <tr>
+                <td><input type="checkbox" data-proj="${x.id}"${selected.has(x.id) ? ' checked' : ''} aria-label="${esc(x.name)}"></td>
+                <td>${esc(x.name)}</td>
+                <td>${x.reference ? esc(x.reference) : '<span class="muted">–</span>'}</td>
+                <td class="num">${fh(x.hours)}</td>
+                <td class="num">${eur(x.amount)}</td>
+                <td class="right"><button type="button" class="btn small" data-proj-only="${x.id}">Alleen ${x.reference ? 'deze PO' : 'dit project'}</button></td>
+              </tr>`).join('')}</tbody>
+          </table></div>
+          <p class="muted small">Maak per PO een aparte factuur: klik op "Alleen deze PO", maak de factuur, en doe daarna hetzelfde voor de volgende.</p>
+        </div>` : '';
       box.innerHTML = `
         <section class="panel">
           <div class="panel-pad stack">
             <div class="row spread"><h2>Factuur voor ${esc(p.client.name)}</h2><span class="muted">${fmtRange(from, to)}</span></div>
             ${p.client.eb_relation_id ? '' : '<div class="notice warn">Deze klant is nog niet gekoppeld aan een relatie in e-Boekhouden. Doe dat eerst onder <a href="#/beheer/klanten">Beheer › Klanten</a>.</div>'}
+            ${projectPicker}
+            ${multiPo ? `<div class="notice warn">Deze factuur bevat uren van ${p.references.length} verschillende PO's (${p.references.map(esc).join(', ')}). Klanten verwachten meestal één PO per factuur: vink hierboven de projecten per PO aan.</div>` : ''}
             <p class="muted small">${LINE_MODES[p.line_mode]}, opmaak <code>${esc(p.line_format)}</code>. Aan te passen per klant onder Beheer › Klanten.</p>
           </div>
-          <div class="table-wrap"><table class="data">
+          ${p.lines.length ? `<div class="table-wrap"><table class="data">
             <thead><tr><th>Omschrijving</th><th class="num">Uren</th><th class="num">Tarief</th><th class="num">Bedrag</th></tr></thead>
             <tbody>${p.lines.map((l) => `<tr><td>${esc(l.description)}</td><td class="num">${fh(l.hours)}</td><td class="num">${eur(l.rate)}</td><td class="num">${eur(l.amount)}</td></tr>`).join('')}</tbody>
             <tfoot><tr><td>Totaal excl. btw</td><td class="num">${fh(p.hours)}</td><td></td><td class="num">${eur(p.total_excl)}</td></tr></tfoot>
-          </table></div>
+          </table></div>` : '<div class="panel-pad"><p class="muted">Geen projecten geselecteerd.</p></div>'}
           <form class="panel-pad stack" id="make-invoice">
             <div class="form-grid">
+              <label class="field">Factuurnummer<span class="hint">Volgende vrije nummer${p.invoice_number.source === 'e-Boekhouden' ? ' in e-Boekhouden' : ' (e-Boekhouden niet bereikbaar, gebaseerd op de app)'}</span><input name="invoice_number" maxlength="30" value="${esc(p.invoice_number.number)}"></label>
               <label class="field">Factuurdatum<input type="date" name="date" value="${todayIso()}" required></label>
-              <label class="field">Referentie<span class="hint">Bijvoorbeeld inkoopordernummer van de klant</span><input name="reference" maxlength="50"></label>
+              <label class="field">Referentie<span class="hint">${p.reference ? 'Ingevuld vanuit de PO van het project' : 'Bijvoorbeeld inkoopordernummer van de klant'}</span><input name="reference" maxlength="50" value="${esc(p.reference || '')}"></label>
             </div>
-            <label class="check"><input type="checkbox" name="send_email"${p.email_default ? ' checked' : ''}> Factuur direct mailen naar de klant (naar het factuur-e-mailadres in e-Boekhouden)</label>
+            <label class="field">Factuurtekst<input name="text" maxlength="2000" value="${esc(p.invoice_text || '')}"></label>
+            <label class="check"><input type="checkbox" name="send_email"${p.email_default ? ' checked' : ''}> Factuur direct mailen naar de klant (naar het factuur-e-mailadres in e-Boekhouden${p.email_template ? ', met het gekozen e-mailsjabloon' : ''})</label>
+            <label class="check"><input type="checkbox" name="print"${p.print_default ? ' checked' : ''}> Klaarzetten voor verzending per post</label>
             <div class="row">
-              <button class="btn" type="button" data-dry>Bekijk API-verzoek</button>
-              <button class="btn primary" type="submit"${p.client.eb_relation_id ? '' : ' disabled'}>Maak factuur in e-Boekhouden</button>
+              <button class="btn" type="button" data-dry${p.lines.length ? '' : ' disabled'}>Bekijk API-verzoek</button>
+              <button class="btn primary" type="submit"${p.client.eb_relation_id && p.lines.length ? '' : ' disabled'}>Maak factuur in e-Boekhouden</button>
             </div>
             <div data-dry-out></div>
           </form>
         </section>`;
-      box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (!projectIds) box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+      const currentIds = () => [...box.querySelectorAll('[data-proj]:checked')].map((c) => Number(c.dataset.proj));
+      box.querySelectorAll('[data-proj]').forEach((c) => c.addEventListener('change', () => {
+        showInvoicePreview(view, clientId, currentIds());
+      }));
+      box.querySelectorAll('[data-proj-only]').forEach((b) => b.addEventListener('click', () => {
+        // Alle projecten met dezelfde PO, of alleen dit project als het geen PO heeft.
+        const proj = p.projects.find((x) => x.id === Number(b.dataset.projOnly));
+        const ids = proj.reference ? p.projects.filter((x) => x.reference === proj.reference).map((x) => x.id) : [proj.id];
+        showInvoicePreview(view, clientId, ids);
+      }));
 
       const form = box.querySelector('#make-invoice');
       const payload = () => ({
         client_id: clientId, from, to, date: form.date.value, reference: form.reference.value,
+        invoice_number: form.invoice_number.value, text: form.text.value, print: form.print.checked,
         send_email: form.send_email.checked,
+        project_ids: projectIds,
       });
       form.querySelector('[data-dry]').addEventListener('click', async () => {
         const out = form.querySelector('[data-dry-out]');
@@ -1557,7 +1596,7 @@
         e.preventDefault();
         const ok = await confirmDialog(
           'Factuur maken',
-          `Je maakt een factuur van ${eur(p.total_excl)} excl. btw voor ${esc(p.client.name)} in e-Boekhouden${form.send_email.checked ? ' en e-Boekhouden mailt hem direct naar de klant' : ''}. De ${fh(p.hours)} uur worden daarna als gefactureerd gemarkeerd.`,
+          `Je maakt factuur ${esc(form.invoice_number.value || '(nummer door e-Boekhouden)')} van ${eur(p.total_excl)} excl. btw voor ${esc(p.client.name)}${form.reference.value ? ` met referentie ${esc(form.reference.value)}` : ''} in e-Boekhouden${form.send_email.checked ? ' en e-Boekhouden mailt hem direct naar de klant' : ''}. De ${fh(p.hours)} uur worden daarna als gefactureerd gemarkeerd.`,
           'Maak factuur'
         );
         if (!ok) return;
@@ -1878,6 +1917,7 @@
         </select></label>
         <label class="field">Projectnaam<input name="name" value="${esc(p.name)}" required maxlength="200"></label>
         <label class="field">Code<span class="hint">Optioneel, komt op de factuurregel</span><input name="code" value="${esc(p.code)}" maxlength="30"></label>
+        <label class="field">PO / referentie<span class="hint">${!p.reference && poFromName(p.name) ? 'Voorgesteld uit de projectnaam; ' : ''}wordt de referentie op de factuur</span><input name="reference" value="${esc(p.reference || poFromName(p.name) || '')}" maxlength="50"></label>
         <label class="field">Uurtarief (€)<span class="hint">Standaard; per medewerker aan te passen</span><input name="default_rate" inputmode="decimal" value="${fmtInput(p.default_rate)}"></label>
         <label class="field">Budget (uren)<span class="hint">Optioneel</span><input name="budget_hours" inputmode="decimal" value="${fmtInput(p.budget_hours)}"></label>
       </div>
@@ -1902,7 +1942,7 @@
           <thead><tr><th>Klant / project</th><th>Code</th><th class="num">Tarief</th><th class="num">Budget</th><th class="num">Geschreven</th><th class="num">Activiteiten</th><th class="num">Team</th><th>Status</th><th></th></tr></thead>
           <tbody>${projects.map((p) => `
             <tr>
-              <td>${esc(p.client_name || 'Intern')} / ${esc(p.name)}${p.billable ? '' : ' <span class="muted small">(niet declarabel)</span>'}</td>
+              <td>${esc(p.client_name || 'Intern')} / ${esc(p.name)}${p.billable ? '' : ' <span class="muted small">(niet declarabel)</span>'}${p.reference ? `<br><span class="muted small">Referentie: ${esc(p.reference)}</span>` : ''}</td>
               <td>${esc(p.code || '')}</td>
               <td class="num">${!p.billable ? '–' : (p.default_rate ? eur(p.default_rate) : (p.activity_count ? '<span class="muted">Per activiteit</span>' : '<span class="badge submitted">Tarief ontbreekt</span>'))}</td>
               <td class="num">${p.budget_hours ? fh(p.budget_hours) : (p.activity_budget_hours ? `<span title="Som van de activiteitbudgetten">${fh(p.activity_budget_hours)}</span>` : '')}</td>
@@ -1923,6 +1963,7 @@
       client_id: fd.get('client_id') ? Number(fd.get('client_id')) : null,
       name: fd.get('name'),
       code: fd.get('code'),
+      reference: fd.get('reference'),
       default_rate: numOrNull(fd.get('default_rate')) ?? 0,
       budget_hours: numOrNull(fd.get('budget_hours')),
       billable: fd.get('billable') === 'on',
@@ -1978,6 +2019,12 @@
       });
     }
     return sheetJsPromise;
+  }
+
+  function poFromName(name) {
+    const m = String(name || '').match(/\b(POR?)\s*:?\s*([A-Z0-9][A-Z0-9-]*\d[A-Z0-9-]*)/i);
+    if (!m) return null;
+    return m[1].toUpperCase() === 'POR' && !/\s|:/.test(m[0].slice(3, 4)) ? `${m[1].toUpperCase()}${m[2]}` : `${m[1].toUpperCase()} ${m[2]}`;
   }
 
   const normName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/(bv|nv|vof)$/, '');
@@ -2642,20 +2689,47 @@
           <label class="check"><input type="checkbox" name="process"${e.process ? ' checked' : ''}> Factuur direct verwerken in de boekhouding (wordt een openstaande post)</label>
 
           <h3>Factuurregels</h3>
-          <p class="muted small">Standaard voor alle klanten; per klant aan te passen onder Klanten. Dezelfde codes als in e-Boekhouden, plus [PROJECTCODE] en [MEDEWERKER].</p>
+          <p class="muted small">Standaard voor alle klanten; per klant aan te passen onder Klanten. Dezelfde codes als in e-Boekhouden, plus [PROJECTCODE], [MEDEWERKER] en [REFERENTIE] (PO van het project).</p>
           ${lineFormatFields({ mode: e.lineMode, format: e.lineFormat })}
+
+          <h3>Factuur</h3>
+          <div class="form-grid">
+            <label class="field">Voorvoegsel factuurnummer<span class="hint">Bijvoorbeeld F voor F00035</span><input name="numberPrefix" value="${esc(e.numberPrefix ?? 'F')}" maxlength="10"></label>
+            <label class="field">Aantal cijfers<span class="hint">5 geeft F00035</span><input name="numberDigits" inputmode="numeric" value="${esc(e.numberDigits ?? 5)}"></label>
+          </div>
+          <p class="muted small">Bij elke factuur stelt de app het volgende vrije nummer voor: het hoogste nummer met dit voorvoegsel in e-Boekhouden plus één. Voorbeeld: <strong data-number-example></strong></p>
+          <label class="field">Factuurtekst<span class="hint">Komt op de factuur. Codes: [MAAND] (bijv. september 2026), [PERIODE], [KLANT], [REFERENTIE]</span>
+            <input name="invoiceText" value="${esc(e.invoiceText ?? '')}" maxlength="500"></label>
+          <label class="check"><input type="checkbox" name="printDefault"${e.printDefault ? ' checked' : ''}> Facturen standaard klaarzetten voor verzending per post</label>
 
           <h3>Factuur mailen</h3>
           <label class="check"><input type="checkbox" name="emailDefault"${e.emailDefault ? ' checked' : ''}> Facturen standaard direct mailen naar de klant</label>
-          <p class="muted small">e-Boekhouden mailt de factuur naar het factuur-e-mailadres van de relatie. Per factuur kun je dit nog aan- of uitzetten. Codes: [KLANT] en [PERIODE].</p>
-          <label class="field">Onderwerp<input name="emailSubject" value="${esc(e.emailSubject)}" maxlength="200" required></label>
-          <label class="field">Tekst<textarea name="emailBody" rows="6" maxlength="5000" required>${esc(e.emailBody)}</textarea></label>
+          <p class="muted small">e-Boekhouden mailt de factuur naar het factuur-e-mailadres van de relatie. Per factuur kun je dit nog aan- of uitzetten.</p>
+          <label class="field">E-mailsjabloon<span class="hint">Uit e-Boekhouden. Kies je een sjabloon, dan komen onderwerp en tekst daaruit.</span>
+            ${options && options.emailTemplates ? `<select name="emailTemplateId">${opt('', 'Geen sjabloon, eigen tekst hieronder', !e.emailTemplateId)}${options.emailTemplates.map((t) => opt(t.id, t.label, t.id === e.emailTemplateId)).join('')}</select>`
+              : `<input name="emailTemplateId" inputmode="numeric" value="${esc(e.emailTemplateId ?? '')}" placeholder="Id van het e-mailsjabloon">`}</label>
+          <div data-own-mail>
+            <p class="muted small">Eigen tekst (alleen zonder sjabloon). Codes: [KLANT], [PERIODE], [MAAND], [REFERENTIE].</p>
+            <label class="field">Onderwerp<input name="emailSubject" value="${esc(e.emailSubject)}" maxlength="200" required></label>
+            <label class="field">Tekst<textarea name="emailBody" rows="6" maxlength="5000" required>${esc(e.emailBody)}</textarea></label>
+          </div>
           <div><button class="btn primary" type="submit">Opslaan</button></div>
         </form>
       </div>`;
 
     const form = el.querySelector('#eb-form');
     bindLineFormatFields(form);
+    const numberExample = () => {
+      const digits = Math.max(1, Math.min(10, parseInt(form.numberDigits.value, 10) || 5));
+      form.querySelector('[data-number-example]').textContent = `${form.numberPrefix.value}${'35'.padStart(digits, '0')}`;
+    };
+    form.numberPrefix.addEventListener('input', numberExample);
+    form.numberDigits.addEventListener('input', numberExample);
+    numberExample();
+    const ownMail = () => { form.querySelector('[data-own-mail]').hidden = Boolean(form.emailTemplateId.value); };
+    form.emailTemplateId.addEventListener('change', ownMail);
+    form.emailTemplateId.addEventListener('input', ownMail);
+    ownMail();
     form.addEventListener('submit', async (ev) => {
       ev.preventDefault();
       const fd = new FormData(form);
@@ -2668,6 +2742,8 @@
             vatCode: fd.get('vatCode'), termOfPayment: fd.get('termOfPayment'), process: fd.get('process') === 'on',
             lineMode: fd.get('lineMode'), lineFormat: fd.get('lineFormat'),
             emailDefault: fd.get('emailDefault') === 'on', emailSubject: fd.get('emailSubject'), emailBody: fd.get('emailBody'),
+            emailTemplateId: fd.get('emailTemplateId'), invoiceText: fd.get('invoiceText'),
+            numberPrefix: fd.get('numberPrefix'), numberDigits: fd.get('numberDigits'), printDefault: fd.get('printDefault') === 'on',
           },
         });
         toast('Instellingen opgeslagen');
@@ -2685,7 +2761,7 @@
 
   /* ---------- Opmaak factuurregel ---------- */
 
-  const LINE_CODES = ['DATUM', 'PROJECT', 'PROJECTCODE', 'ACTIVITEIT', 'OPMERKING', 'MEDEWERKER'];
+  const LINE_CODES = ['DATUM', 'PROJECT', 'PROJECTCODE', 'ACTIVITEIT', 'OPMERKING', 'MEDEWERKER', 'REFERENTIE'];
   const LINE_MODES = { entry: 'Eén regel per uurregel', grouped: 'Samengevoegd per project, activiteit en medewerker' };
 
   // Zelfde regels als op de server, alleen voor het voorbeeld in beeld.
@@ -2696,8 +2772,9 @@
       ACTIVITEIT: 'Neptune Software Architect',
       OPMERKING: mode === 'grouped' ? 'Workshop key-users; Datamodel uitgewerkt' : 'Workshop key-users',
       MEDEWERKER: state.user ? state.user.name : 'Medewerker',
+      REFERENTIE: 'PO 5473-1',
     };
-    let out = String(format || '').replace(/\[(DATUM|PROJECTCODE|PROJECT|ACTIVITEIT|OPMERKING|MEDEWERKER)\]/gi, (m, k) => vars[k.toUpperCase()] || '');
+    let out = String(format || '').replace(/\[(DATUM|PROJECTCODE|PROJECT|ACTIVITEIT|OPMERKING|MEDEWERKER|REFERENTIE)\]/gi, (m, k) => vars[k.toUpperCase()] || '');
     out = out.replace(/\s*([|–,;/])\s*(?:[|–,;/]\s*)+/g, ' $1 ');
     return out.replace(/^[\s|–,;/:]+|[\s|–,;/:]+$/g, '').replace(/\s{2,}/g, ' ');
   }
