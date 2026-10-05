@@ -164,9 +164,12 @@
       ? `Nog ${f(left)} over (${Math.round((left / budget) * 100)}%)`
       : `${f(-left)} over budget`;
     const text = money ? `${eur0(used)} / ${eur0(budget)}` : `${fh(used)} / ${fh(budget)} uur`;
+    const g = money ? eur0 : (x) => `${fh(x)} uur`;
+    const leftText = left > 0.005 ? `Nog ${g(left)} beschikbaar` : left >= -0.005 ? 'Budget is op' : `${g(-left)} over budget`;
     return `<div class="budget-line lvl-${lvl}" title="${esc(title)}">
       <div class="bbar"><span style="width:${Math.min(100, (used / budget) * 100).toFixed(1)}%"></span></div>
-      <span class="nowrap"${kind ? ` data-kind="${esc(kind)}"` : ''}>${text}</span></div>`;
+      <span class="nowrap"${kind ? ` data-kind="${esc(kind)}"` : ''}>${text}</span>
+      <span class="budget-left">${leftText}</span></div>`;
   }
   const opt = (value, label, selected) => `<option value="${esc(value)}"${selected ? ' selected' : ''}>${esc(label)}</option>`;
 

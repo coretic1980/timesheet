@@ -47,7 +47,7 @@ Stack: Node 20 + Express, Postgres (Neon) en een frontend zonder build-stap. De 
   - **E-mailsjabloon:** kies een sjabloon uit e-Boekhouden voor het mailen.
 - **Factuur direct mailen:** e-Boekhouden mailt de factuur naar het factuur-e-mailadres van de relatie, met het onderwerp en de tekst uit Koppeling (codes `[KLANT]` en `[PERIODE]`). Dit zet je per factuur aan of uit.
 - **Budgetten per activiteit:** per project stel je per activiteit een budget in uren en/of euro's in (Projecten › Activiteiten).
-  - In de urenstaat staat bij elke regel een budgetbalk met het verbruik ("38 / 120 uur"). Groen: 50–100% van het budget over, oranje: 25–50% over, rood: minder dan 25% over of overschreden. De balk loopt live mee; in Rapportage worden dezelfde kleuren gebruikt.
+  - In de urenstaat staat bij elke regel een budgetbalk met het verbruik ("38 / 120 uur") en wat er nog beschikbaar is ("Nog 82 uur beschikbaar"). Groen: 50–100% van het budget over, oranje: 25–50% over, rood: minder dan 25% over of overschreden. De balk loopt live mee; in Rapportage worden dezelfde kleuren gebruikt.
   - Activiteitbudgetten stel je in onder Projecten › Activiteiten, of per activiteit onder Activiteiten › Wijzigen (tabel "Budget per project").
   - Onder Rapportage staat een overzicht van alle budgetten.
   - Een projectbudget (Projecten › Wijzigen › Budget) geldt voor alle activiteiten samen. In de urenstaat staat het als balk "Project" bij elke regel van dat project, en een activiteitbudget als tweede balk "Activiteit".

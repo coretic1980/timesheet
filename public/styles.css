@@ -631,3 +631,12 @@ table.grid .proj { overflow: hidden; }
 
 .po-input { width: 11rem; max-width: 100%; padding: 0.25rem 0.45rem; }
 .po-input.missing { border-style: dashed; border-color: var(--submitted); }
+
+/* Resterend budget onder de balk */
+.budget-line { flex-wrap: wrap; }
+.budget-left { flex-basis: 100%; order: 3; font-size: 0.72rem; font-weight: 500; }
+.budget-line.lvl-ok .budget-left { color: var(--approved); }
+.budget-line.lvl-warn .budget-left { color: var(--submitted); }
+.budget-line.lvl-low .budget-left, .budget-line.lvl-over .budget-left { color: var(--rejected); }
+td .budget-line .budget-left { font-size: 0.78rem; }
+table.grid.month .budget-left { font-size: 0.66rem; }
