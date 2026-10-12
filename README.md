@@ -62,6 +62,27 @@ Stack: Node 20 + Express, Postgres (Neon) en een frontend zonder build-stap. De 
   - bij de projectimport worden nieuwe klanten op naam opgezocht in e-Boekhouden en meteen gekoppeld
 - **Koppeling:** klanten koppel je aan een bestaande relatie (via de relatiecode), of je maakt de relatie vanuit de app aan in e-Boekhouden.
 
+## Gebruik op telefoon en desktop
+
+- **Telefoon:**
+  - Tabbalk onderaan: Overzicht, Uren, Goedkeuren, Facturen, Meer.
+  - De urenstaat opent in de **dagweergave**: een strip met de dagen van de week of maand, per project een kaart met een groot urenveld en snelknoppen 2/4/8 uur. Vegen gaat naar de vorige of volgende dag.
+  - "Week indienen" staat vast onderaan, en het filter zit achter de knop Filter.
+  - Tabellen worden op smalle schermen kaarten.
+- **Desktop:**
+  - Het raster is gegroepeerd per klant. Groepen kun je inklappen; de groepskop toont dan de totalen.
+  - Budgetten staan als compacte balk met "nog X u", de details zie je bij aanwijzen.
+  - Met het filter "Alleen regels met uren" verberg je lege regels.
+- **Overzicht (beheerders):** startscherm met te beoordelen uren, te factureren bedrag van vorige maand, budgetten met minder dan 25% over, en wie vorige week nog niet heeft ingediend.
+- **Facturen:**
+  1. Kies een klant.
+  2. Het zijpaneel (volledig scherm op mobiel) loopt door project en PO.
+  3. Controleer de regels.
+  4. Vul de factuurgegevens in en verstuur.
+
+  De gemaakte facturen staan in een eigen tabblad.
+- **Koppeling:** de instellingen zijn gegroepeerd (Boekhouding, Factuurregels, Factuur, E-mail), met een vaste opslaanbalk. De app waarschuwt bij niet-opgeslagen wijzigingen.
+
 ## Installatie
 
 ### 1. Database (Neon)

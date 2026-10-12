@@ -2,7 +2,7 @@
   'use strict';
 
   const app = document.getElementById('app');
-  const state = { user: null, pendingCount: 0, sheet: null, extraRows: {}, sheetFilter: { projects: [], activities: [] }, invoicePeriod: null, reportPeriod: null };
+  const state = { user: null, pendingCount: 0, sheet: null, extraRows: {}, sheetFilter: { projects: [], activities: [], onlyHours: false }, filterOpen: false, invoicePeriod: null, reportPeriod: null };
 
   /* ================= Hulpfuncties ================= */
 
@@ -118,7 +118,15 @@
     document.body.appendChild(dlg);
     const form = dlg.querySelector('form');
     const err = dlg.querySelector('.err');
-    dlg.querySelector('[data-cancel]').addEventListener('click', () => dlg.close());
+    let dirty = false;
+    form.addEventListener('input', () => { dirty = true; });
+    const tryClose = () => {
+      if (dirty && form.querySelector('input:not([type=checkbox]):not([type=hidden]), textarea, select')
+        && !window.confirm('Wijzigingen in dit venster weggooien?')) return;
+      dlg.close();
+    };
+    dlg.querySelector('[data-cancel]').addEventListener('click', tryClose);
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); tryClose(); });
     dlg.addEventListener('close', () => dlg.remove());
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -182,7 +190,26 @@
 
   /* ================= Router & shell ================= */
 
+  // Eenvoudige lijn-iconen (24×24, currentColor).
+  const ICONS = {
+    home: '<path d="M3 11.5 12 4l9 7.5M5.5 10v9.5h13V10"/>',
+    clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+    check: '<path d="M4 12.5 9 17.5 20 6.5"/>',
+    invoice: '<path d="M6.5 3.5h11v17l-2.75-1.6L12 20.5l-2.75-1.6L6.5 20.5z"/><path d="M9.5 8.5h5M9.5 12h5"/>',
+    more: '<circle cx="5.5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="18.5" cy="12" r="1.4"/>',
+    user: '<circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20c1.2-3.7 4-5.5 7.5-5.5s6.3 1.8 7.5 5.5"/>',
+    chart: '<path d="M4 20h16M7 16.5V11M12 16.5V6.5M17 16.5v-4"/>',
+    cog: '<circle cx="12" cy="12" r="3"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M6 18l1.6-1.6M16.4 7.6 18 6"/>',
+    logout: '<path d="M14 4.5h4.5v15H14M10 8l-4 4 4 4M6 12h10"/>',
+    filter: '<path d="M4 6h16M7 12h10M10 18h4"/>',
+    close: '<path d="M6 6l12 12M18 6 6 18"/>',
+    chevron: '<path d="m9 6 6 6-6 6"/>',
+  };
+  const icon = (name, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
+  const isNarrow = () => window.matchMedia('(max-width: 760px)').matches;
+
   const ROUTES = {
+    overzicht: { title: 'Overzicht', admin: true, render: viewDashboard },
     uren: { title: 'Uren', render: viewTimesheet },
     goedkeuren: { title: 'Goedkeuren', admin: true, render: viewApprovals },
     facturen: { title: 'Facturen', admin: true, render: viewInvoicing },
@@ -193,28 +220,66 @@
 
   function currentRoute() {
     const [name, ...params] = location.hash.replace(/^#\/?/, '').split('/');
-    return { name: ROUTES[name] ? name : 'uren', params };
+    const fallback = state.user && state.user.role === 'admin' ? 'overzicht' : 'uren';
+    return { name: ROUTES[name] ? name : fallback, params };
   }
+
+  const initials = (name) => String(name || '?').split(/\s+/).filter(Boolean).map((w) => w[0]).filter((c) => /[A-Za-z]/.test(c)).slice(0, 2).join('').toUpperCase() || '?';
+  const pendingBadge = () => (state.pendingCount ? ` <span class="badge count" data-pending>${state.pendingCount}</span>` : '');
 
   function shellHTML(active) {
     const isAdmin = state.user.role === 'admin';
     const links = Object.entries(ROUTES)
       .filter(([, r]) => !r.hidden && (!r.admin || isAdmin))
-      .map(([key, r]) => {
-        const badge = key === 'goedkeuren' && state.pendingCount
-          ? ` <span class="badge count">${state.pendingCount}</span>` : '';
-        return `<a href="#/${key}"${key === active ? ' aria-current="page"' : ''}>${r.title}${badge}</a>`;
-      }).join('');
+      .map(([key, r]) => `<a href="#/${key}"${key === active ? ' aria-current="page"' : ''}>${r.title}${key === 'goedkeuren' ? pendingBadge() : ''}</a>`)
+      .join('');
+    // Tabbalk onderaan op mobiel: de vier belangrijkste plekken, de rest onder "Meer".
+    const tabs = isAdmin
+      ? [['overzicht', 'Overzicht', 'home'], ['uren', 'Uren', 'clock'], ['goedkeuren', 'Goedkeuren', 'check'], ['facturen', 'Facturen', 'invoice']]
+      : [['uren', 'Uren', 'clock'], ['account', 'Account', 'user']];
+    const moreActive = !tabs.some(([k]) => k === active);
+    const tabbar = `
+      <nav class="tabbar" aria-label="Hoofdmenu mobiel">
+        ${tabs.map(([k, label, ic]) => `<a href="#/${k}"${k === active ? ' aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${k === 'goedkeuren' && state.pendingCount ? `<span class="tab-badge" data-pending>${state.pendingCount}</span>` : ''}</a>`).join('')}
+        ${isAdmin ? `<button type="button" data-more${moreActive ? ' aria-current="page"' : ''}>${icon('more')}<span>Meer</span></button>` : ''}
+      </nav>`;
     return `
       <header class="topbar">
-        <a class="brand" href="#/uren">Coretic <span>uren</span></a>
+        <a class="brand" href="#/">Coretic <span>uren</span></a>
         <nav class="nav" aria-label="Hoofdmenu">${links}</nav>
         <div class="userbox">
-          <a href="#/account">${esc(state.user.name)}</a>
-          <button class="btn small ghost" type="button" data-logout>Uitloggen</button>
+          <a href="#/account" class="user-link"><span class="avatar" aria-hidden="true">${esc(initials(state.user.name))}</span><span class="user-name">${esc(state.user.name)}</span></a>
+          <button class="btn small ghost logout-btn" type="button" data-logout>Uitloggen</button>
         </div>
       </header>
-      <main id="view"></main>`;
+      <main id="view"></main>
+      ${tabbar}`;
+  }
+
+  // Bladmenu "Meer" op mobiel.
+  function openMoreSheet() {
+    const items = [['rapportage', 'Rapportage', 'chart'], ['beheer', 'Beheer', 'cog'], ['account', 'Account', 'user']];
+    const sheet = document.createElement('div');
+    sheet.className = 'sheet-backdrop';
+    sheet.innerHTML = `
+      <div class="sheet" role="dialog" aria-label="Meer">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        ${items.map(([k, label, ic]) => `<a href="#/${k}" class="sheet-item">${icon(ic)}<span>${label}</span>${icon('chevron', 'chev')}</a>`).join('')}
+        <button type="button" class="sheet-item danger" data-logout-sheet>${icon('logout')}<span>Uitloggen</span></button>
+      </div>`;
+    const close = () => sheet.remove();
+    sheet.addEventListener('click', async (e) => {
+      if (e.target === sheet || e.target.closest('a')) close();
+      if (e.target.closest('[data-logout-sheet]')) {
+        close();
+        await api('/auth/logout', { method: 'POST' }).catch(() => {});
+        state.user = null;
+        location.hash = '';
+        render();
+      }
+    });
+    document.addEventListener('keydown', function esc1(ev) { if (ev.key === 'Escape') { close(); document.removeEventListener('keydown', esc1); } });
+    document.body.appendChild(sheet);
   }
 
   async function refreshPending() {
@@ -223,8 +288,11 @@
       const rows = await api('/approvals?status=submitted');
       state.pendingCount = rows.length;
       const link = document.querySelector('.nav a[href="#/goedkeuren"]');
-      if (link) {
-        link.innerHTML = `Goedkeuren${state.pendingCount ? ` <span class="badge count">${state.pendingCount}</span>` : ''}`;
+      if (link) link.innerHTML = `Goedkeuren${pendingBadge()}`;
+      const tab = document.querySelector('.tabbar a[href="#/goedkeuren"]');
+      if (tab) {
+        tab.querySelector('.tab-badge')?.remove();
+        if (state.pendingCount) tab.insertAdjacentHTML('beforeend', `<span class="tab-badge" data-pending>${state.pendingCount}</span>`);
       }
     } catch { /* niet kritiek */ }
   }
@@ -239,6 +307,8 @@
       return undefined;
     }
     app.innerHTML = shellHTML(name);
+    app.querySelector('[data-more]')?.addEventListener('click', openMoreSheet);
+    document.body.classList.toggle('has-tabbar', true);
     app.querySelector('[data-logout]').addEventListener('click', async () => {
       await api('/auth/logout', { method: 'POST' }).catch(() => {});
       state.user = null;
@@ -257,11 +327,53 @@
     return undefined;
   }
 
-  window.addEventListener('hashchange', render);
+  // Niet-opgeslagen wijzigingen: formulieren met data-guard waarschuwen bij weggaan.
+  let lastHash = location.hash;
+  let skipHash = false;
+  const dirtyForm = () => document.querySelector('form[data-guard][data-dirty]');
+  document.addEventListener('input', (e) => { const f = e.target.closest('form[data-guard]'); if (f) f.dataset.dirty = '1'; });
+  document.addEventListener('change', (e) => { const f = e.target.closest('form[data-guard]'); if (f) f.dataset.dirty = '1'; });
+  window.addEventListener('beforeunload', (e) => { if (dirtyForm()) { e.preventDefault(); e.returnValue = ''; } });
+  window.addEventListener('hashchange', () => {
+    if (skipHash) { skipHash = false; return; }
+    if (dirtyForm() && !window.confirm('Je hebt wijzigingen die nog niet zijn opgeslagen. Toch weggaan?')) {
+      skipHash = true;
+      location.hash = lastHash;
+      return;
+    }
+    lastHash = location.hash;
+    render();
+  });
+
+  // Op smalle schermen worden tabellen kaarten: elke cel krijgt de kolomnaam als label.
+  function labelTables(root = document) {
+    root.querySelectorAll('table.data').forEach((t) => {
+      const heads = [...t.querySelectorAll('thead th')].map((th) => th.textContent.trim());
+      if (!heads.length) return;
+      t.querySelectorAll('tbody tr, tfoot tr').forEach((tr) => {
+        [...tr.children].forEach((td, i) => { if (!td.hasAttribute('data-label')) td.setAttribute('data-label', heads[i] || ''); });
+      });
+    });
+  }
+  let labelQueued = false;
+  new MutationObserver(() => {
+    if (labelQueued) return;
+    labelQueued = true;
+    requestAnimationFrame(() => { labelQueued = false; labelTables(); });
+  }).observe(document.body, { childList: true, subtree: true });
+
+  // Van smal naar breed (of andersom) op de urenstaat: juiste weergave tonen.
+  window.matchMedia('(max-width: 760px)').addEventListener('change', () => {
+    if (state.user && currentRoute().name === 'uren' && state.sheet) {
+      const view = document.getElementById('view');
+      if (view && view.querySelector('#sheet-content')) renderSheetBody(view);
+    }
+  });
 
   /* ================= Inloggen ================= */
 
   function renderLogin() {
+    document.body.classList.remove('has-tabbar');
     document.title = 'Inloggen – Coretic uren';
     app.innerHTML = `
       <div class="login">
@@ -479,8 +591,15 @@
     let stored = null;
     try { stored = localStorage.getItem(MODE_KEY); } catch { /* geen opslag beschikbaar */ }
     // Zonder voorkeur: lijst op een smal scherm, raster op desktop.
-    state.sheetMode = stored === 'list' || stored === 'grid' ? stored : (window.innerWidth < 700 ? 'list' : 'grid');
+    state.sheetMode = ['list', 'grid', 'day'].includes(stored) ? stored : (isNarrow() ? 'day' : 'grid');
     return state.sheetMode;
+  }
+
+  // Raster werkt niet op een telefoon en de dagweergave is voor kleine schermen: kies wat past.
+  function effectiveMode() {
+    const m = sheetMode();
+    if (isNarrow()) return m === 'grid' ? 'day' : m;
+    return m === 'day' ? 'grid' : m;
   }
 
   function setSheetMode(mode) {
@@ -592,17 +711,34 @@
     }
     return out;
   }
-  const budgetSlot = (key) => `<div class="budget-slot" data-budget="${key}" hidden></div>`;
+  const budgetSlot = (key, compact = false) => `<div class="budget-slot${compact ? ' compact' : ''}" data-budget="${key}"${compact ? ' data-compact' : ''} hidden></div>`;
+
+  // Compacte budgetregel: dunne balk + wat er nog over is, details bij aanwijzen.
+  function budgetMini(i) {
+    const money = i.unit === 'amount';
+    const f = money ? eur0 : (x) => `${fh(x)} u`;
+    const left = i.budget - i.used;
+    const lvl = budgetLevel(i.used, i.budget);
+    const leftText = left > 0.005 ? `nog ${f(left)}` : left >= -0.005 ? 'op' : `${f(-left)} over`;
+    const full = money ? `${eur0(i.used)} / ${eur0(i.budget)}` : `${fh(i.used)} / ${fh(i.budget)} uur`;
+    const title = `${i.kind}: ${full} · ${left > 0.005 ? `nog ${money ? eur0(left) : `${fh(left)} uur`} beschikbaar` : left >= -0.005 ? 'budget is op' : `${money ? eur0(-left) : `${fh(-left)} uur`} over budget`}`;
+    return `<div class="bmini lvl-${lvl}" title="${esc(title)}">
+      <span class="bmini-kind">${i.kind === 'Project' ? 'Proj.' : 'Act.'}</span>
+      <span class="bbar"><span style="width:${Math.min(100, (i.used / i.budget) * 100).toFixed(1)}%"></span></span>
+      <span class="bmini-left">${leftText}</span></div>`;
+  }
 
   // Filter op projecten en/of activiteiten (meervoudig; activiteit werkt ook over projecten heen).
   function filterActive() {
     const f = state.sheetFilter;
-    return Boolean(f.projects.length || f.activities.length);
+    return Boolean(f.projects.length || f.activities.length || f.onlyHours);
   }
+  const rowHasHours = (data, r) => data.days.some((d) => data.map.has(cellKey(r.pid, r.aid, d)));
   function visibleRows(data) {
     const f = state.sheetFilter;
     return sheetRows(data).filter((r) => (!f.projects.length || f.projects.includes(r.pid))
-      && (!f.activities.length || f.activities.includes(r.aid)));
+      && (!f.activities.length || f.activities.includes(r.aid))
+      && (!f.onlyHours || rowHasHours(data, r)));
   }
 
   // Keuzes per filter: projecten uit alle regels, activiteiten uit de regels van de gekozen projecten.
@@ -669,9 +805,10 @@
   function filterHTML(data) {
     if (sheetRows(data).length < 2 && !filterActive()) return '';
     return `
-      <div class="sheet-filter">
+      <div class="sheet-filter${state.filterOpen ? ' open' : ''}">
         ${msHTML('projects', 'Project', data)}
         ${msHTML('activities', 'Activiteit', data)}
+        <label class="check only-hours"><input type="checkbox" data-only-hours${state.sheetFilter.onlyHours ? ' checked' : ''}> Alleen regels met uren</label>
         <div class="sheet-filter-info" data-filter-info>${filterInfoHTML(data)}</div>
       </div>`;
   }
@@ -731,11 +868,21 @@
         applyFilter(view, kind);
       }
       if (e.target.closest('[data-filter-clear]')) {
-        state.sheetFilter = { projects: [], activities: [] };
+        state.sheetFilter = { projects: [], activities: [], onlyHours: false };
         renderSheetBody(view);
+      }
+      if (e.target.closest('[data-filter-toggle]')) {
+        state.filterOpen = !state.filterOpen;
+        view.querySelector('.sheet-filter')?.classList.toggle('open', state.filterOpen);
+        e.target.closest('[data-filter-toggle]').setAttribute('aria-expanded', String(state.filterOpen));
       }
     });
     view.addEventListener('change', (e) => {
+      if (e.target.matches('[data-only-hours]')) {
+        state.sheetFilter.onlyHours = e.target.checked;
+        applyFilter(view, null);
+        return;
+      }
       const cb = e.target.closest('.ms-option input');
       if (!cb) return;
       const kind = cb.closest('.ms').dataset.ms;
@@ -797,9 +944,10 @@
     view.addEventListener('change', (e) => {
       if (e.target.matches('input.hrs')) saveCell(view, e.target);
       if (e.target.matches('.list-entry [data-field]')) saveListRow(view, e.target.closest('li'));
+      if (e.target.matches('.day-card [data-field]')) saveDayCard(view, e.target.closest('.day-card'));
     });
     view.addEventListener('input', (e) => {
-      if (e.target.matches('.le-desc-input')) autoGrow(e.target);
+      if (e.target.matches('.le-desc-input, .dv-desc')) autoGrow(e.target);
     });
     view.addEventListener('keydown', (e) => {
       if (e.target.matches('input.hrs') && e.key === 'Enter') {
@@ -814,6 +962,7 @@
         e.target.blur();
         return;
       }
+      if (e.target.matches('.dv-hours') && e.key === 'Enter') { e.preventDefault(); e.target.blur(); return; }
       if (!e.target.matches('.list-entry [data-field]')) return;
       if (e.key === 'Escape') {
         const entry = state.sheet.map.get(e.target.closest('li').dataset.key);
@@ -827,6 +976,24 @@
         e.target.blur();
       }
     });
+    // Dagweergave: vegen naar links/rechts gaat naar de volgende/vorige dag.
+    let touch = null;
+    view.addEventListener('touchstart', (e) => {
+      if (effectiveMode() !== 'day' || e.target.closest('input, textarea, .day-strip, .ms')) { touch = null; return; }
+      touch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    }, { passive: true });
+    view.addEventListener('touchend', (e) => {
+      if (!touch) return;
+      const dx = e.changedTouches[0].clientX - touch.x;
+      const dy = e.changedTouches[0].clientY - touch.y;
+      touch = null;
+      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      const days = state.sheet.days;
+      const i = days.indexOf(selectedDay(state.sheet)) + (dx < 0 ? 1 : -1);
+      if (i < 0 || i >= days.length) return;
+      state.sheetDay = days[i];
+      renderSheetContent(view);
+    }, { passive: true });
     view.addEventListener('pointerdown', (e) => {
       const grip = e.target.closest('.grip');
       if (grip && e.button === 0) startDrag(view, grip, e);
@@ -851,11 +1018,24 @@
         return;
       }
       const mode = e.target.closest('[data-sheet-mode]');
-      if (mode && mode.dataset.sheetMode !== sheetMode()) {
+      if (mode && mode.dataset.sheetMode !== effectiveMode()) {
         setSheetMode(mode.dataset.sheetMode);
         renderSheetBody(view);
       }
       if (e.target.closest('[data-add-row]')) openAddRow(view);
+      const chip = e.target.closest('[data-day]');
+      if (chip) {
+        state.sheetDay = chip.dataset.day;
+        renderSheetContent(view);
+      }
+      const quick = e.target.closest('[data-quick]');
+      if (quick) {
+        const card = quick.closest('.day-card');
+        card.querySelector('.dv-hours').value = quick.dataset.quick === '0' ? '' : quick.dataset.quick;
+        saveDayCard(view, card);
+      }
+      const grp = e.target.closest('[data-grp-toggle]');
+      if (grp) toggleGroup(view, grp.dataset.grpToggle);
       const edit = e.target.closest('[data-list-edit]');
       if (edit) editListEntry(view, edit.closest('li').dataset.key);
       const del = e.target.closest('[data-list-delete]');
@@ -874,8 +1054,10 @@
 
   function renderSheetContent(view) {
     const box = view.querySelector('#sheet-content');
-    box.innerHTML = sheetMode() === 'list' ? listHTML(state.sheet) : gridHTML(state.sheet);
-    box.querySelectorAll('.le-desc-input').forEach(autoGrow);
+    const mode = effectiveMode();
+    box.innerHTML = mode === 'list' ? listHTML(state.sheet) : mode === 'day' ? dayHTML(state.sheet) : gridHTML(state.sheet);
+    if (mode === 'day') box.querySelector('.day-chip[aria-pressed="true"]')?.scrollIntoView({ block: 'nearest', inline: 'center' });
+    box.querySelectorAll('.le-desc-input, .dv-desc').forEach(autoGrow);
     refreshSheetChrome(view);
   }
 
@@ -886,6 +1068,20 @@
     <span><i style="background:var(--rejected)"></i>Afgekeurd</span>
     <span><i style="background:var(--invoiced)"></i>Gefactureerd</span>`;
 
+  const GROUP_KEY = 'coretic-uren:ingeklapt';
+  function collapsedGroups() {
+    if (!state.collapsed) {
+      try { state.collapsed = JSON.parse(localStorage.getItem(GROUP_KEY) || '[]'); } catch { state.collapsed = []; }
+    }
+    return state.collapsed;
+  }
+  function toggleGroup(view, name) {
+    const list = collapsedGroups();
+    state.collapsed = list.includes(name) ? list.filter((x) => x !== name) : [...list, name];
+    try { localStorage.setItem(GROUP_KEY, JSON.stringify(state.collapsed)); } catch { /* geen opslag */ }
+    renderSheetContent(view);
+  }
+
   function gridHTML(data) {
     const today = todayIso();
     const rows = visibleRows(data);
@@ -894,7 +1090,16 @@
       return `<th class="${cls}" scope="col"><span>${DAYS[dow(d)]}</span><span class="dnum">${Number(d.slice(8))}</span></th>`;
     }).join('');
 
-    const body = rows.map((r) => {
+    // Groeperen per klant; ingeklapte groepen tonen alleen hun kop met totaal.
+    const groups = [];
+    for (const r of rows) {
+      const g = r.project.client_name || 'Intern';
+      if (!groups.length || groups[groups.length - 1].name !== g) groups.push({ name: g, rows: [] });
+      groups[groups.length - 1].rows.push(r);
+    }
+    const collapsed = collapsedGroups();
+    const showGroups = groups.length > 1;
+    const rowHTML = (r) => {
       const p = r.project;
       const rowLocked = !p.active || (r.activity && !r.activity.active);
       const cells = data.days.map((d, i) => {
@@ -915,15 +1120,27 @@
       return `
         <tr data-row="${r.key}">
           <th class="proj" scope="row">
-            <span class="client">${esc(p.client_name || 'Intern')}</span>
-            <span class="name">${esc(p.name)}</span>
-            ${r.activity ? `<span class="act">${esc(r.activity.name)}</span>` : ''}
+            ${showGroups ? '' : `<span class="client">${esc(p.client_name || 'Intern')}</span>`}
+            <span class="name" title="${esc(p.name)}">${esc(p.name)}</span>
+            ${r.activity ? `<span class="act" title="${esc(r.activity.name)}">${esc(r.activity.name)}</span>` : ''}
             ${p.billable ? '' : '<span class="tag">Niet declarabel</span>'}
-            ${budgetSlot(r.key)}
+            ${budgetSlot(r.key, true)}
           </th>
           ${cells}
           <td class="rowtotal" data-rowtotal></td>
         </tr>`;
+    };
+    const body = groups.map((g) => {
+      const closed = showGroups && collapsed.includes(g.name);
+      const head = showGroups ? `
+        <tr class="grp${closed ? ' closed' : ''}" data-grp="${esc(g.name)}">
+          <th class="proj" scope="rowgroup">
+            <button type="button" class="grp-toggle" data-grp-toggle="${esc(g.name)}" aria-expanded="${!closed}">${icon('chevron', 'grp-chev')}<span>${esc(g.name)}</span><span class="muted small">${g.rows.length}</span></button>
+          </th>
+          ${data.days.map((d) => `<td class="grp-day${dow(d) >= 5 ? ' weekend' : ''}" data-grp-day="${d}"></td>`).join('')}
+          <td class="rowtotal" data-grp-total></td>
+        </tr>` : '';
+      return head + (closed ? '' : g.rows.map(rowHTML).join(''));
     }).join('') || `<tr><td class="empty-row" colspan="${data.days.length + 2}">${filterActive() ? 'Geen regels voor dit filter.' : 'Voeg een regel toe om uren te schrijven.'}</td></tr>`;
 
     const foot = data.days.map((d) => `<td class="coltotal${dow(d) >= 5 ? ' weekend' : ''}" data-coltotal="${d}"></td>`).join('');
@@ -971,6 +1188,116 @@
         if (first) first.focus();
       },
     });
+  }
+
+  /* ---------- Dagweergave (mobiel) ---------- */
+
+  function selectedDay(data) {
+    if (state.sheetDay && data.days.includes(state.sheetDay)) return state.sheetDay;
+    const t = todayIso();
+    return data.days.includes(t) ? t : data.days[0];
+  }
+  const dayTotal = (data, d) => [...data.map.values()].filter((e) => e.work_date === d).reduce((s, e) => s + e.hours, 0);
+
+  function dayStripHTML(data) {
+    const sel = selectedDay(data);
+    const today = todayIso();
+    return data.days.map((d) => {
+      const tot = dayTotal(data, d);
+      const statuses = [...data.map.values()].filter((e) => e.work_date === d).map((e) => e.status);
+      const st = statuses.includes('rejected') ? 'rejected' : statuses.some((s) => s === 'draft') ? 'draft'
+        : statuses.includes('submitted') ? 'submitted' : statuses.length ? statuses[0] : '';
+      return `<button type="button" class="day-chip${dow(d) >= 5 ? ' weekend' : ''}${d === today ? ' today' : ''}${st ? ` s-${st}` : ''}" data-day="${d}" aria-pressed="${d === sel}">
+        <span class="dc-dow">${DAYS[dow(d)]}</span><span class="dc-num">${Number(d.slice(8))}</span><span class="dc-hrs">${tot ? fh(tot) : '–'}</span></button>`;
+    }).join('');
+  }
+
+  function dayHTML(data) {
+    const d = selectedDay(data);
+    const rows = visibleRows(data).slice().sort((x, y) => Number(data.map.has(cellKey(y.pid, y.aid, d))) - Number(data.map.has(cellKey(x.pid, x.aid, d))));
+    const tot = dayTotal(data, d);
+    const cards = rows.map((r) => {
+      const p = r.project;
+      const e = data.map.get(cellKey(r.pid, r.aid, d));
+      const locked = (e && !EDITABLE.includes(e.status)) || !p.active || (r.activity && !r.activity.active);
+      return `
+        <section class="panel day-card${e ? ` has s-${e.status}` : ''}" data-row="${r.key}">
+          <div class="dcard-head">
+            <div class="dcard-title">
+              <span class="client">${esc(p.client_name || 'Intern')}${p.billable ? '' : ' · niet declarabel'}</span>
+              <span class="name">${esc(p.name)}</span>
+              ${r.activity ? `<span class="act">${esc(r.activity.name)}</span>` : ''}
+            </div>
+            ${e && e.status !== 'draft' ? statusBadge(e.status) : ''}
+          </div>
+          ${budgetSlot(r.key, true)}
+          ${e && e.status === 'rejected' && e.rejection_reason ? `<p class="le-reject">Afgekeurd: ${esc(e.rejection_reason)}</p>` : ''}
+          ${locked ? `<p class="dcard-locked"><strong>${fh(e ? e.hours : 0)} uur</strong>${e && e.description ? ` · ${esc(e.description)}` : ''}</p>` : `
+          <div class="dcard-input">
+            <label class="dv-hours-wrap"><input class="dv-hours" data-field="hours" inputmode="decimal" autocomplete="off" placeholder="0"
+              value="${fmtInput(e && e.hours)}" aria-label="Uren ${esc(rowLabel(r.pid, r.aid))}"><span>uur</span></label>
+            <div class="quick" role="group" aria-label="Snel invullen">
+              ${[2, 4, 8].map((h) => `<button type="button" class="btn quick-btn" data-quick="${h}">${h}</button>`).join('')}
+              ${e ? '<button type="button" class="btn quick-btn ghost" data-quick="0" aria-label="Wissen">×</button>' : ''}
+            </div>
+          </div>
+          <textarea class="dv-desc" data-field="description" rows="1" maxlength="1000" placeholder="Wat heb je gedaan?"
+            aria-label="Omschrijving ${esc(rowLabel(r.pid, r.aid))}">${esc(e ? e.description : '')}</textarea>`}
+        </section>`;
+    }).join('');
+    return `
+      <div class="day-strip" role="tablist" aria-label="Dagen">${dayStripHTML(data)}</div>
+      <div class="day-head"><h2>${DAYS_LONG[dow(d)][0].toUpperCase()}${DAYS_LONG[dow(d)].slice(1)} ${fmtDate(d)}</h2><span class="muted" data-day-total>${fh(tot)} uur</span></div>
+      ${cards || `<div class="panel empty"><p>${filterActive() ? 'Geen regels voor dit filter.' : 'Geen projecten om uren op te schrijven.'}</p></div>`}`;
+  }
+
+  // Uren en omschrijving van één kaart opslaan (vervangt de waarde van die dag).
+  async function saveDayCard(view, card) {
+    const { pid, aid } = parseKey(card.dataset.row);
+    const d = selectedDay(state.sheet);
+    const key = cellKey(pid, aid, d);
+    const existing = state.sheet.map.get(key);
+    const hoursEl = card.querySelector('.dv-hours');
+    const descEl = card.querySelector('.dv-desc');
+    const hours = parseHours(hoursEl.value);
+    const description = descEl.value.trim();
+    if (Number.isNaN(hours) || hours < 0 || hours > 24) {
+      hoursEl.classList.add('error');
+      toast('Vul een aantal uren in tussen 0 en 24, bijvoorbeeld 7,5 of 7:30', true);
+      return;
+    }
+    hoursEl.classList.remove('error');
+    if (!hours && !existing) {
+      if (description) toast('Vul eerst het aantal uren in');
+      return;
+    }
+    if (existing && hours === existing.hours && description === existing.description) return;
+    card.classList.add('saving');
+    try {
+      if (!hours) {
+        await clearCell(pid, aid, d);
+        toast('Uren verwijderd');
+      } else {
+        const res = await api('/timesheet/entry', {
+          method: 'PUT', body: { project_id: pid, activity_id: aid || null, work_date: d, hours, description },
+        });
+        state.sheet.map.set(key, res);
+      }
+      const now = state.sheet.map.get(key);
+      hoursEl.value = fmtInput(now && now.hours);
+      card.classList.toggle('has', Boolean(now));
+      card.className = card.className.replace(/\bs-\w+/g, '').trim();
+      if (now) card.classList.add(`s-${now.status}`);
+      view.querySelector('.day-strip').innerHTML = dayStripHTML(state.sheet);
+      view.querySelector('[data-day-total]').textContent = `${fh(dayTotal(state.sheet, d))} uur`;
+      refreshSheetChrome(view);
+      card.classList.add('saved');
+      setTimeout(() => card.classList.remove('saved'), 900);
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      card.classList.remove('saving');
+    }
   }
 
   /* ---------- Lijstweergave ---------- */
@@ -1244,26 +1571,35 @@
     const [y, m] = data.week_start.split('-').map(Number);
     const title = month ? `${MONTHS_LONG[m - 1][0].toUpperCase()}${MONTHS_LONG[m - 1].slice(1)} ${y}` : `Week ${isoWeek(data.week_start)}`;
     const word = month ? 'maand' : 'week';
+    const mode = effectiveMode();
+    const pct = contract ? Math.min(100, (total / contract) * 100) : 0;
+    const nFilter = state.sheetFilter.projects.length + state.sheetFilter.activities.length + (state.sheetFilter.onlyHours ? 1 : 0);
+    const modeBtn = (k, lbl, cls) => `<button type="button" class="${cls}" data-sheet-mode="${k}" aria-pressed="${mode === k}">${lbl}</button>`;
     return `
       <div class="sheet-head">
         <div class="week-nav">
-          <a class="btn" href="#/uren/${prev}" aria-label="Vorige ${word}">‹</a>
-          <h1>${title}</h1>
-          <a class="btn" href="#/uren/${next}" aria-label="Volgende ${word}">›</a>
-          ${isCurrent ? '' : `<a class="btn ghost" href="#/uren/${today}">Deze ${word}</a>`}
-          ${month ? '' : `<span class="range">${fmtRange(data.week_start, data.week_end)}</span>`}
+          <a class="btn icon-btn" href="#/uren/${prev}" aria-label="Vorige ${word}">‹</a>
+          <div class="week-title"><h1>${title}</h1>${month ? '' : `<span class="range">${fmtRange(data.week_start, data.week_end)}</span>`}</div>
+          <a class="btn icon-btn" href="#/uren/${next}" aria-label="Volgende ${word}">›</a>
+          ${isCurrent ? '' : `<a class="btn ghost small today-btn" href="#/uren/${today}">Deze ${word}</a>`}
         </div>
-        <div class="row">
+        <div class="week-total" title="${esc(label)}">
+          <strong>${fh(total)}</strong><span class="muted">/ ${fh(contract)} uur</span>
+          <span class="week-progress" aria-hidden="true"><span style="width:${pct.toFixed(1)}%"></span></span>
+          <span class="week-status muted small">${label}</span>
+        </div>
+        <div class="sheet-switches">
           <div class="seg" role="group" aria-label="Periode">
             <button type="button" data-sheet-period="week" aria-pressed="${!month}">Week</button>
             <button type="button" data-sheet-period="month" aria-pressed="${month}">Maand</button>
           </div>
           <div class="seg" role="group" aria-label="Weergave">
-            <button type="button" data-sheet-mode="grid" aria-pressed="${sheetMode() === 'grid'}">Raster</button>
-            <button type="button" data-sheet-mode="list" aria-pressed="${sheetMode() === 'list'}">Lijst</button>
+            ${modeBtn('grid', 'Raster', 'only-wide')}${modeBtn('day', 'Dag', 'only-narrow')}${modeBtn('list', 'Lijst', '')}
           </div>
-          <div class="week-total"><strong>${fh(total)}</strong><span class="muted">van ${fh(contract)} uur</span></div>
-          <span class="muted">${label}</span>
+          <button type="button" class="btn filter-toggle${nFilter ? ' active' : ''}" data-filter-toggle aria-expanded="${state.filterOpen ? 'true' : 'false'}">${icon('filter')}<span>Filter</span>${nFilter ? `<span class="badge count">${nFilter}</span>` : ''}</button>
+        </div>
+        <div class="sheet-actions">
+          <span class="sheet-actions-info"><strong>${fh(total)}</strong> / ${fh(contract)} uur · ${label}</span>
           ${submitted && !editable ? '<button class="btn" type="button" data-sheet-action="recall">Terughalen</button>' : ''}
           <button class="btn primary" type="button" data-sheet-action="submit"${editable ? '' : ' disabled'}>${month ? 'Maand' : 'Week'} indienen</button>
         </div>
@@ -1287,7 +1623,9 @@
       const { pid, aid } = parseKey(el.dataset.budget);
       const infos = budgetInfos(pid, aid);
       el.hidden = !infos.length;
-      el.innerHTML = infos.map((i) => `<div class="budget-row"><span class="budget-kind">${i.kind}</span>${budgetBar(i.used, i.budget, i.unit, i.kind)}</div>`).join('');
+      el.innerHTML = el.dataset.compact !== undefined
+        ? infos.map(budgetMini).join('')
+        : infos.map((i) => `<div class="budget-row"><span class="budget-kind">${i.kind}</span>${budgetBar(i.used, i.budget, i.unit, i.kind)}</div>`).join('');
     }
 
     if (!view.querySelector('table.grid')) return;
@@ -1298,7 +1636,20 @@
       tr.querySelector('[data-rowtotal]').textContent = sum ? fh(sum) : '';
       week += sum;
     }
-    const visible = [...view.querySelectorAll('tbody tr[data-row]')].map((tr) => parseKey(tr.dataset.row));
+    // Ook regels in ingeklapte groepen tellen mee.
+    const visible = visibleRows(data);
+    week = visible.reduce((s, r) => s + data.days.reduce((t, d) => t + ((data.map.get(cellKey(r.pid, r.aid, d)) || {}).hours || 0), 0), 0);
+    for (const tr of view.querySelectorAll('tbody tr.grp')) {
+      const g = tr.dataset.grp;
+      const gr = visible.filter((r) => (r.project.client_name || 'Intern') === g);
+      let gt = 0;
+      for (const td of tr.querySelectorAll('[data-grp-day]')) {
+        const s = gr.reduce((t, r) => t + ((data.map.get(cellKey(r.pid, r.aid, td.dataset.grpDay)) || {}).hours || 0), 0);
+        td.textContent = s ? fh(s) : '';
+        gt += s;
+      }
+      tr.querySelector('[data-grp-total]').textContent = gt ? fh(gt) : '';
+    }
     for (const d of data.days) {
       const sum = visible.reduce((s, { pid, aid }) => s + ((data.map.get(cellKey(pid, aid, d)) || {}).hours || 0), 0);
       const td = view.querySelector(`[data-coltotal="${d}"]`);
@@ -1497,6 +1848,116 @@
     }
   }
 
+  /* ================= Overzicht (beheerders) ================= */
+
+  function greeting() {
+    const h = new Date().getHours();
+    return h < 12 ? 'Goedemorgen' : h < 18 ? 'Goedemiddag' : 'Goedenavond';
+  }
+
+  async function viewDashboard(view) {
+    const today = todayIso();
+    const lastWeek = addDays(weekStart(today), -7);
+    const prevMonth = monthBounds(-1);
+    const curMonth = monthBounds(0);
+    const yearStart = `${today.slice(0, 4)}-01-01`;
+    const [pending, candPrev, candCur, year, week] = await Promise.all([
+      api('/approvals?status=submitted'),
+      api(`/invoicing/candidates?from=${prevMonth.from}&to=${prevMonth.to}`),
+      api(`/invoicing/candidates?from=${curMonth.from}&to=${curMonth.to}`),
+      api(`/reports/summary?from=${yearStart}&to=${today}`),
+      api(`/reports/summary?from=${lastWeek}&to=${addDays(lastWeek, 6)}`),
+    ]);
+
+    // Te beoordelen, per medewerker.
+    const byUser = new Map();
+    for (const r of pending) {
+      const u = byUser.get(r.user_name) || { hours: 0, rows: 0 };
+      u.hours += r.hours; u.rows += 1;
+      byUser.set(r.user_name, u);
+    }
+    const pendingHours = pending.reduce((s, r) => s + r.hours, 0);
+
+    // Te factureren: vorige maand eerst (dat is wat je nu factureert), deze maand ter info.
+    const billPrev = candPrev.filter((c) => c.hours > 0);
+    const prevAmount = billPrev.reduce((s, c) => s + c.amount, 0);
+    const curAmount = candCur.reduce((s, c) => s + c.amount, 0);
+
+    // Budgetten die bijna op zijn (minder dan 25% over) of overschreden.
+    const budgets = [];
+    for (const x of year.byActivity || []) {
+      if (!x.active) continue;
+      if (x.budget_hours) budgets.push({ label: `${x.client_name || 'Intern'} / ${x.project_name}`, sub: x.activity_name, used: x.hours_all_time, budget: x.budget_hours, unit: 'hours' });
+      else if (x.budget_amount) budgets.push({ label: `${x.client_name || 'Intern'} / ${x.project_name}`, sub: x.activity_name, used: x.value_all_time, budget: x.budget_amount, unit: 'amount' });
+    }
+    for (const x of year.byProject || []) {
+      if (x.active && x.budget_hours) budgets.push({ label: `${x.client_name || 'Intern'} / ${x.name}`, sub: 'Projectbudget', used: x.hours_all_time, budget: x.budget_hours, unit: 'hours' });
+    }
+    const tight = budgets.filter((b) => ['low', 'over'].includes(budgetLevel(b.used, b.budget)))
+      .sort((x, y) => (x.budget - x.used) / x.budget - (y.budget - y.used) / y.budget);
+
+    // Vorige week: wie heeft nog niet (alles) ingediend.
+    const late = (week.byUser || []).filter((u) => u.draft_hours > 0 || u.hours === 0);
+
+    const tile = (href, label, value, sub, lvl = '') => `
+      <a class="panel tile${lvl ? ` tile-${lvl}` : ''}" href="${href}">
+        <span class="tile-label">${label}</span><strong class="tile-value">${value}</strong><span class="tile-sub muted small">${sub}</span>
+      </a>`;
+    const monthName = (b) => MONTHS_LONG[Number(b.from.slice(5, 7)) - 1];
+
+    view.innerHTML = `
+      <div class="stack dash">
+        <div class="row spread"><h1>${greeting()}${state.user.name ? `, ${esc(state.user.name.split(' ')[0])}` : ''}</h1>
+          <a class="btn" href="#/uren">${icon('clock')} Uren schrijven</a></div>
+        <div class="tiles">
+          ${tile('#/goedkeuren', 'Te beoordelen', pending.length ? `${fh(pendingHours)} uur` : 'Niets', pending.length ? `${pending.length} regels van ${byUser.size} ${byUser.size === 1 ? 'medewerker' : 'medewerkers'}` : 'Alles is beoordeeld', pending.length ? 'warn' : 'ok')}
+          ${tile('#/facturen', `Te factureren ${monthName(prevMonth)}`, eur0(prevAmount), billPrev.length ? `${billPrev.length} ${billPrev.length === 1 ? 'klant' : 'klanten'}, goedgekeurd` : 'Niets meer open', prevAmount ? 'accent' : 'ok')}
+          ${tile('#/rapportage', 'Budgetten bijna op', String(tight.length), tight.length ? 'Minder dan 25% over' : 'Alle budgetten ruim', tight.length ? 'low' : 'ok')}
+          ${tile('#/rapportage', 'Week ' + isoWeek(lastWeek) + ' niet ingediend', String(late.length), late.length ? late.map((u) => esc(u.name.split(' ')[0])).join(', ') : 'Iedereen is bij', late.length ? 'warn' : 'ok')}
+        </div>
+
+        <div class="dash-cols">
+          <section class="panel">
+            <div class="panel-pad row spread"><h2>Te beoordelen</h2>${pending.length ? '<a class="btn small" href="#/goedkeuren">Beoordelen</a>' : ''}</div>
+            ${byUser.size ? `<ul class="dash-list">${[...byUser.entries()].map(([n, u]) => `
+              <li><a href="#/goedkeuren"><span>${esc(n)}</span><span class="muted">${u.rows} regels</span><strong>${fh(u.hours)} uur</strong></a></li>`).join('')}</ul>`
+              : '<div class="empty small"><p>Er wacht niets op goedkeuring.</p></div>'}
+          </section>
+
+          <section class="panel">
+            <div class="panel-pad row spread"><h2>Factureren</h2><a class="btn small" href="#/facturen" data-inv-prev>${monthName(prevMonth)}</a></div>
+            ${billPrev.length ? `<ul class="dash-list">${billPrev.map((c) => `
+              <li><a href="#/facturen" data-inv-client="${c.id}"><span>${esc(c.name)}</span><span class="muted">${fh(c.hours)} uur${c.eb_relation_id ? '' : ' · nog koppelen'}</span><strong>${eur0(c.amount)}</strong></a></li>`).join('')}</ul>`
+              : `<div class="empty small"><p>Alles van ${monthName(prevMonth)} is gefactureerd.</p></div>`}
+            <p class="panel-pad muted small dash-foot">Deze maand tot nu toe goedgekeurd: <strong>${eur0(curAmount)}</strong></p>
+          </section>
+
+          <section class="panel">
+            <div class="panel-pad row spread"><h2>Budgetten</h2><a class="btn small" href="#/rapportage">Rapportage</a></div>
+            ${tight.length ? `<ul class="dash-list budgets">${tight.slice(0, 6).map((b) => `
+              <li><div><span>${esc(b.label)}</span><span class="muted small">${esc(b.sub)}</span></div>${budgetBar(b.used, b.budget, b.unit)}</li>`).join('')}</ul>`
+              : `<div class="empty small"><p>${budgets.length ? 'Alle budgetten hebben nog meer dan 25% over.' : 'Nog geen budgetten ingesteld. Dat doe je bij Beheer › Projecten › Activiteiten.'}</p></div>`}
+          </section>
+
+          <section class="panel">
+            <div class="panel-pad"><h2>Week ${isoWeek(lastWeek)}</h2></div>
+            <ul class="dash-list">${(week.byUser || []).map((u) => {
+              const st = u.hours === 0 ? '<span class="badge rejected">Niets geschreven</span>'
+                : u.draft_hours > 0 ? `<span class="badge submitted">${fh(u.draft_hours)} uur niet ingediend</span>`
+                  : u.submitted_hours > 0 ? '<span class="badge">Te beoordelen</span>' : '<span class="badge approved">Ingediend</span>';
+              return `<li><div class="dash-li"><span>${esc(u.name)}</span><span class="muted">${fh(u.hours)} / ${fh(u.weekly_hours)} uur</span>${st}</div></li>`;
+            }).join('')}</ul>
+          </section>
+        </div>
+      </div>`;
+
+    view.querySelector('[data-inv-prev]').addEventListener('click', () => { state.invoicePeriod = prevMonth; });
+    view.querySelectorAll('[data-inv-client]').forEach((l) => l.addEventListener('click', () => {
+      state.invoicePeriod = prevMonth;
+      state.openInvoiceClient = Number(l.dataset.invClient);
+    }));
+  }
+
   /* ================= Goedkeuren ================= */
 
   async function viewApprovals(view, params) {
@@ -1597,7 +2058,8 @@
 
   /* ================= Facturen ================= */
 
-  async function viewInvoicing(view) {
+  async function viewInvoicing(view, params = []) {
+    const tab = params[0] === 'historie' ? 'historie' : 'open';
     state.invoicePeriod = state.invoicePeriod || monthBounds(-1);
     const { from, to } = state.invoicePeriod;
     const [candidates, history] = await Promise.all([
@@ -1617,50 +2079,80 @@
 
     const histRows = history.map((i) => `
       <tr${i.reverted_at ? ' class="muted"' : ''}>
-        <td class="nowrap">${fmtDate(i.created_at.slice(0, 10), true)}</td>
+        <td><strong>${esc(i.eb_invoice_number || (i.eb_invoice_id ? `#${i.eb_invoice_id}` : '–'))}</strong>${/^https:\/\//i.test(i.pdf_url || '') ? ` <a href="${esc(i.pdf_url)}" target="_blank" rel="noopener noreferrer">PDF</a>` : ''}</td>
         <td>${esc(i.client_name)}</td>
         <td class="nowrap">${fmtRange(i.period_from, i.period_to)}</td>
         <td class="num">${fh(i.hours)}</td>
         <td class="num">${eur(i.total_excl)}</td>
-        <td>${esc(i.eb_invoice_number || (i.eb_invoice_id ? `#${i.eb_invoice_id}` : '–'))}</td>
-        <td>${/^https:\/\//i.test(i.pdf_url || '') ? `<a href="${esc(i.pdf_url)}" target="_blank" rel="noopener noreferrer">PDF</a>` : ''}</td>
+        <td class="nowrap">${fmtDate(i.created_at.slice(0, 10), true)}</td>
         <td class="right nowrap">${i.reverted_at
           ? `<span class="badge" title="Teruggedraaid op ${fmtDate(i.reverted_at.slice(0, 10), true)}${i.reverted_by_name ? ` door ${esc(i.reverted_by_name)}` : ''}">Teruggedraaid</span>`
           : `<button class="btn small" data-revert="${i.id}">Terugdraaien</button>`}</td>
       </tr>`).join('');
 
+    const pendingOpen = candidates.reduce((s, c) => s + (c.open_hours || 0), 0);
+    const total = candidates.reduce((s, c) => s + c.amount, 0);
+    const active = history.filter((i) => !i.reverted_at).length;
+    const periodLabel = (() => {
+      const m = monthBounds(-1); const c = monthBounds(0);
+      if (from === m.from && to === m.to) return 'vorige maand';
+      if (from === c.from && to === c.to) return 'deze maand';
+      return fmtRange(from, to);
+    })();
     view.innerHTML = `
       <div class="stack">
-        <h1>Facturen</h1>
-        <form class="panel panel-pad row" id="period">
-          <label class="field">Van<input type="date" name="from" value="${from}" required></label>
-          <label class="field">Tot en met<input type="date" name="to" value="${to}" required></label>
-          <div class="row" style="align-self:end">
-            <button class="btn" type="button" data-month="-1">Vorige maand</button>
-            <button class="btn" type="button" data-month="0">Deze maand</button>
-            <button class="btn primary" type="submit">Toon</button>
+        <div class="row spread"><h1>Facturen</h1></div>
+        <div class="tabs" role="tablist">
+          <button role="tab" aria-selected="${tab === 'open'}" data-href="#/facturen">Te factureren</button>
+          <button role="tab" aria-selected="${tab === 'historie'}" data-href="#/facturen/historie">Gemaakte facturen <span class="muted">${active}</span></button>
+        </div>
+        ${tab === 'open' ? `
+        <form class="period-bar" id="period">
+          <div class="seg" role="group" aria-label="Periode">
+            <button type="button" data-month="-1" aria-pressed="${periodLabel === 'vorige maand'}">Vorige maand</button>
+            <button type="button" data-month="0" aria-pressed="${periodLabel === 'deze maand'}">Deze maand</button>
           </div>
+          <details class="period-custom"${periodLabel.includes('–') ? ' open' : ''}><summary class="btn ghost small">Andere periode</summary>
+            <div class="row">
+              <label class="field">Van<input type="date" name="from" value="${from}" required></label>
+              <label class="field">Tot en met<input type="date" name="to" value="${to}" required></label>
+              <button class="btn primary" type="submit" style="align-self:end">Toon</button>
+            </div>
+          </details>
         </form>
         <section class="panel">
-          <div class="panel-pad"><h2>Te factureren</h2>
-            <p class="muted small">Alleen goedgekeurde uren op declarabele projecten. Uren die nog niet zijn goedgekeurd staan apart, zodat je ziet of je moet wachten.</p></div>
-          ${candidates.length ? `<div class="table-wrap"><table class="data">
-            <thead><tr><th>Klant</th><th>e-Boekhouden</th><th class="num">Goedgekeurd</th><th class="num">Bedrag excl. btw</th><th class="num">Nog niet goedgekeurd</th><th></th></tr></thead>
-            <tbody>${candRows}</tbody></table></div>`
-          : '<div class="empty"><p>Geen declarabele uren in deze periode.</p></div>'}
-        </section>
-        <div id="preview"></div>
+          <div class="panel-pad">
+            <h2>Stap 1 · Kies een klant</h2>
+            <p class="muted small">${candidates.length ? `${eur(total)} excl. btw aan goedgekeurde uren in ${periodLabel}.` : ''} Alleen goedgekeurde uren op declarabele projecten komen op de factuur.</p>
+            ${pendingOpen ? `<div class="notice warn small">Er staan nog ${fh(pendingOpen)} uur in deze periode die niet zijn goedgekeurd. <a href="#/goedkeuren">Naar Goedkeuren</a></div>` : ''}
+          </div>
+          ${candidates.length ? `<ul class="client-pick">${candidates.map((c) => `
+            <li>
+              <button type="button" class="client-row" data-preview="${c.id}"${c.hours ? '' : ' disabled'}>
+                <span class="cr-name">${esc(c.name)}<span class="muted small">${c.eb_relation_id ? esc(c.eb_relation_code || `#${c.eb_relation_id}`) : 'Nog niet gekoppeld aan e-Boekhouden'}</span></span>
+                <span class="cr-hours">${fh(c.hours)} uur${c.open_hours ? `<span class="badge submitted">+${fh(c.open_hours)} open</span>` : ''}</span>
+                <strong class="cr-amount">${eur(c.amount)}</strong>
+                ${icon('chevron', 'chev')}
+              </button>
+            </li>`).join('')}</ul>`
+          : `<div class="empty"><h2>Niets te factureren in ${periodLabel}</h2><p>${pendingOpen ? 'Keur eerst de openstaande uren goed.' : 'Kies een andere periode, of kijk bij Gemaakte facturen.'}</p></div>`}
+        </section>` : `
         <section class="panel">
-          <div class="panel-pad"><h2>Gemaakte facturen</h2></div>
           ${history.length ? `<div class="table-wrap"><table class="data">
-            <thead><tr><th>Gemaakt</th><th>Klant</th><th>Periode</th><th class="num">Uren</th><th class="num">Excl. btw</th><th>Factuurnummer</th><th></th><th></th></tr></thead>
+            <thead><tr><th>Factuurnummer</th><th>Klant</th><th>Periode</th><th class="num">Uren</th><th class="num">Excl. btw</th><th>Gemaakt</th><th></th></tr></thead>
             <tbody>${histRows}</tbody></table></div>`
-          : '<div class="empty"><p>Nog geen facturen gemaakt vanuit deze app.</p></div>'}
-        </section>
+          : '<div class="empty"><h2>Nog geen facturen</h2><p>Facturen die je hier maakt, komen in deze lijst. <a href="#/facturen">Naar Te factureren</a></p></div>'}
+        </section>`}
       </div>`;
+    view.querySelectorAll('[data-href]').forEach((b) => b.addEventListener('click', () => { location.hash = b.dataset.href; }));
+    if (tab === 'open' && state.openInvoiceClient) {
+      const id = state.openInvoiceClient;
+      state.openInvoiceClient = null;
+      if (candidates.some((c) => c.id === id && c.hours)) showInvoicePreview(view, id);
+    }
 
     const form = view.querySelector('#period');
-    form.addEventListener('submit', (e) => {
+    if (form) form.addEventListener('submit', (e) => {
       e.preventDefault();
       state.invoicePeriod = { from: form.from.value, to: form.to.value };
       render();
@@ -1694,10 +2186,33 @@
   }
 
   // projectIds: null = alle projecten van de klant met uren in de periode.
+  // Zijpaneel (desktop) of volledig scherm (mobiel) voor de factuur.
+  function invoiceDrawer() {
+    let d = document.querySelector('.drawer-backdrop');
+    if (d) return d.querySelector('.drawer-body');
+    d = document.createElement('div');
+    d.className = 'drawer-backdrop';
+    d.innerHTML = `
+      <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+        <header class="drawer-head"><h2 id="drawer-title">Factuur</h2><button type="button" class="btn icon-btn ghost" data-drawer-close aria-label="Sluiten">${icon('close')}</button></header>
+        <div class="drawer-body"></div>
+      </aside>`;
+    const close = () => { d.remove(); document.body.classList.remove('drawer-open'); document.removeEventListener('keydown', onKey); };
+    const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('dialog[open]')) close(); };
+    d.addEventListener('click', (e) => { if (e.target === d || e.target.closest('[data-drawer-close]')) close(); });
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('hashchange', close, { once: true });
+    document.body.appendChild(d);
+    document.body.classList.add('drawer-open');
+    requestAnimationFrame(() => d.classList.add('in'));
+    return d.querySelector('.drawer-body');
+  }
+  const closeDrawer = () => document.querySelector('[data-drawer-close]')?.click();
+
   async function showInvoicePreview(view, clientId, projectIds = null) {
     const { from, to } = state.invoicePeriod;
-    const box = view.querySelector('#preview');
-    box.innerHTML = '<p class="muted">Factuur voorbereiden…</p>';
+    const box = invoiceDrawer();
+    if (!box.innerHTML) box.innerHTML = '<p class="muted panel-pad">Factuur voorbereiden…</p>';
     try {
       const q = projectIds ? `&project_ids=${projectIds.join(',')}` : '';
       const p = await api(`/invoicing/preview?client_id=${clientId}&from=${from}&to=${to}${q}`);
@@ -1706,7 +2221,7 @@
       const many = p.projects.length > 1;
       const projectPicker = p.projects.length ? `
         <div class="stack">
-          <h3>${many ? 'Projecten op deze factuur' : 'Project op deze factuur'}</h3>
+          <h3 class="step"><span>2</span>${many ? 'Projecten en PO' : 'Project en PO'}</h3>
           <div class="table-wrap"><table class="data">
             <thead><tr><th></th><th>Project</th><th>PO / referentie</th><th class="num">Uren</th><th class="num">Bedrag</th><th></th></tr></thead>
             <tbody>${p.projects.map((x) => `
@@ -1725,21 +2240,24 @@
           </table></div>
           <p class="muted small">De PO / referentie wordt opgeslagen bij het project en komt als referentie op de factuur.${many ? ' Maak per PO een aparte factuur met "Alleen deze PO".' : ''}</p>
         </div>` : '';
+      document.getElementById('drawer-title').textContent = `Factuur voor ${p.client.name}`;
       box.innerHTML = `
-        <section class="panel">
-          <div class="panel-pad stack">
-            <div class="row spread"><h2>Factuur voor ${esc(p.client.name)}</h2><span class="muted">${fmtRange(from, to)}</span></div>
+        <section>
+          <div class="drawer-pad stack">
+            <p class="muted">${fmtRange(from, to)} · ${fh(p.hours)} uur · <strong>${eur(p.total_excl)}</strong> excl. btw</p>
             ${p.client.eb_relation_id ? '' : '<div class="notice warn">Deze klant is nog niet gekoppeld aan een relatie in e-Boekhouden. Doe dat eerst onder <a href="#/beheer/klanten">Beheer › Klanten</a>.</div>'}
             ${projectPicker}
             ${multiPo ? `<div class="notice warn">Deze factuur bevat uren van ${p.references.length} verschillende PO's (${p.references.map(esc).join(', ')}). Klanten verwachten meestal één PO per factuur: vink hierboven de projecten per PO aan.</div>` : ''}
+            <h3 class="step"><span>3</span>Regels controleren</h3>
             <p class="muted small">${LINE_MODES[p.line_mode]}, opmaak <code>${esc(p.line_format)}</code>. Aan te passen per klant onder Beheer › Klanten.</p>
           </div>
-          ${p.lines.length ? `<div class="table-wrap"><table class="data">
+          ${p.lines.length ? `<div class="table-wrap"><table class="data lines">
             <thead><tr><th>Omschrijving</th><th class="num">Uren</th><th class="num">Tarief</th><th class="num">Bedrag</th></tr></thead>
             <tbody>${p.lines.map((l) => `<tr><td>${esc(l.description)}</td><td class="num">${fh(l.hours)}</td><td class="num">${eur(l.rate)}</td><td class="num">${eur(l.amount)}</td></tr>`).join('')}</tbody>
             <tfoot><tr><td>Totaal excl. btw</td><td class="num">${fh(p.hours)}</td><td></td><td class="num">${eur(p.total_excl)}</td></tr></tfoot>
           </table></div>` : '<div class="panel-pad"><p class="muted">Geen projecten geselecteerd.</p></div>'}
-          <form class="panel-pad stack" id="make-invoice">
+          <form class="drawer-pad stack" id="make-invoice">
+            <h3 class="step"><span>4</span>Factuurgegevens en versturen</h3>
             <div class="form-grid">
               <label class="field">Factuurnummer<span class="hint">Volgende vrije nummer${p.invoice_number.source === 'e-Boekhouden' ? ' in e-Boekhouden' : ' (e-Boekhouden niet bereikbaar, gebaseerd op de app)'}</span><input name="invoice_number" maxlength="30" value="${esc(p.invoice_number.number)}"></label>
               <label class="field">Factuurdatum<input type="date" name="date" value="${todayIso()}" required></label>
@@ -1748,14 +2266,13 @@
             <label class="field">Factuurtekst<input name="text" maxlength="2000" value="${esc(p.invoice_text || '')}"></label>
             <label class="check"><input type="checkbox" name="send_email"${p.email_default ? ' checked' : ''}> Factuur direct mailen naar de klant (naar het factuur-e-mailadres in e-Boekhouden${p.email_template ? ', met het gekozen e-mailsjabloon' : ''})</label>
             <label class="check"><input type="checkbox" name="print"${p.print_default ? ' checked' : ''}> Klaarzetten voor verzending per post</label>
-            <div class="row">
-              <button class="btn" type="button" data-dry${p.lines.length ? '' : ' disabled'}>Bekijk API-verzoek</button>
-              <button class="btn primary" type="submit"${p.client.eb_relation_id && p.lines.length ? '' : ' disabled'}>Maak factuur in e-Boekhouden</button>
-            </div>
             <div data-dry-out></div>
+            <div class="drawer-foot">
+              <button class="btn" type="button" data-dry${p.lines.length ? '' : ' disabled'}>Bekijk API-verzoek</button>
+              <button class="btn primary" type="submit"${p.client.eb_relation_id && p.lines.length ? '' : ' disabled'}>Maak factuur · ${eur(p.total_excl)}</button>
+            </div>
           </form>
         </section>`;
-      if (!projectIds) box.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
       const currentIds = () => [...box.querySelectorAll('[data-proj]:checked')].map((c) => Number(c.dataset.proj));
       box.querySelectorAll('[data-proj]').forEach((c) => c.addEventListener('change', () => {
@@ -1812,13 +2329,14 @@
         try {
           const res = await api('/invoicing/create', { method: 'POST', body: payload() });
           toast(`Factuur ${res.invoice.eb_invoice_number || ''} gemaakt in e-Boekhouden${res.emailed ? ' en gemaild naar de klant' : ''}`.replace('  ', ' '));
+          closeDrawer();
           render();
         } catch (ex) {
           toast(ex.message, true);
         }
       });
     } catch (e) {
-      box.innerHTML = `<div class="notice error">${esc(e.message)}</div>`;
+      box.innerHTML = `<div class="drawer-pad"><div class="notice error">${esc(e.message)}</div></div>`;
     }
   }
 
@@ -2900,9 +3418,14 @@
           ? '<div class="notice">Het API-token staat ingesteld op de server.</div>'
           : '<div class="notice warn">Er is nog geen API-token ingesteld. Maak er een aan in e-Boekhouden (Beheer › API-tokens, kies "e-Boekhouden API") en zet het als <code>EB_API_TOKEN</code> in de omgevingsvariabelen op Render.</div>'}
         ${optionsError ? `<div class="notice error">Keuzelijsten ophalen lukte niet: ${esc(optionsError)}. Je kunt de ids ook handmatig invullen.</div>` : ''}
-        <form class="panel panel-pad stack" id="eb-form">
-          <div class="row spread"><h2>Factuurinstellingen</h2>
+        <form class="stack" id="eb-form" data-guard>
+          <nav class="jump" aria-label="Onderdelen">
+            <a href="#eb-boek" data-jump>Boekhouding</a><a href="#eb-regels" data-jump>Factuurregels</a><a href="#eb-factuur" data-jump>Factuur</a><a href="#eb-mail" data-jump>E-mail</a>
+          </nav>
+          <fieldset class="panel panel-pad stack group" id="eb-boek">
+          <div class="row spread"><legend><h2>Boekhouding</h2></legend>
             <button class="btn" type="button" data-test${s.eb_configured ? '' : ' disabled'}>Test verbinding</button></div>
+          <p class="muted small">Waar facturen in e-Boekhouden terechtkomen.</p>
           <div class="form-grid">
             <label class="field">Factuursjabloon${pick('templateId', options && options.templates, e.templateId)}</label>
             <label class="field">Omzetrekening<span class="hint">Bijvoorbeeld 8000 Omzet</span>${pick('revenueLedgerId', options && options.ledgers, e.revenueLedgerId, { filterCat: 'VW' })}</label>
@@ -2912,12 +3435,16 @@
             <label class="field">Betaaltermijn (dagen)<input name="termOfPayment" inputmode="numeric" value="${esc(e.termOfPayment)}"></label>
           </div>
           <label class="check"><input type="checkbox" name="process"${e.process ? ' checked' : ''}> Factuur direct verwerken in de boekhouding (wordt een openstaande post)</label>
+          </fieldset>
 
-          <h3>Factuurregels</h3>
+          <fieldset class="panel panel-pad stack group" id="eb-regels">
+          <legend><h2>Factuurregels</h2></legend>
           <p class="muted small">Standaard voor alle klanten; per klant aan te passen onder Klanten. Dezelfde codes als in e-Boekhouden, plus [PROJECTCODE], [MEDEWERKER] en [REFERENTIE] (PO van het project).</p>
           ${lineFormatFields({ mode: e.lineMode, format: e.lineFormat })}
+          </fieldset>
 
-          <h3>Factuur</h3>
+          <fieldset class="panel panel-pad stack group" id="eb-factuur">
+          <legend><h2>Factuur</h2></legend>
           <div class="form-grid">
             <label class="field">Voorvoegsel factuurnummer<span class="hint">Bijvoorbeeld F voor F00035</span><input name="numberPrefix" value="${esc(e.numberPrefix ?? 'F')}" maxlength="10"></label>
             <label class="field">Aantal cijfers<span class="hint">5 geeft F00035</span><input name="numberDigits" inputmode="numeric" value="${esc(e.numberDigits ?? 5)}"></label>
@@ -2926,8 +3453,10 @@
           <label class="field">Factuurtekst<span class="hint">Komt op de factuur. Codes: [MAAND] (bijv. september 2026), [PERIODE], [KLANT], [REFERENTIE]</span>
             <input name="invoiceText" value="${esc(e.invoiceText ?? '')}" maxlength="500"></label>
           <label class="check"><input type="checkbox" name="printDefault"${e.printDefault ? ' checked' : ''}> Facturen standaard klaarzetten voor verzending per post</label>
+          </fieldset>
 
-          <h3>Factuur mailen</h3>
+          <fieldset class="panel panel-pad stack group" id="eb-mail">
+          <legend><h2>E-mail</h2></legend>
           <label class="check"><input type="checkbox" name="emailDefault"${e.emailDefault ? ' checked' : ''}> Facturen standaard direct mailen naar de klant</label>
           <p class="muted small">e-Boekhouden mailt de factuur naar het factuur-e-mailadres van de relatie. Per factuur kun je dit nog aan- of uitzetten.</p>
           <label class="field">E-mailsjabloon<span class="hint">Uit e-Boekhouden. Kies je een sjabloon, dan komen onderwerp en tekst daaruit.</span>
@@ -2938,7 +3467,8 @@
             <label class="field">Onderwerp<input name="emailSubject" value="${esc(e.emailSubject)}" maxlength="200" required></label>
             <label class="field">Tekst<textarea name="emailBody" rows="6" maxlength="5000" required>${esc(e.emailBody)}</textarea></label>
           </div>
-          <div><button class="btn primary" type="submit">Opslaan</button></div>
+          </fieldset>
+          <div class="save-bar"><span class="muted small" data-dirty-hint>Alle wijzigingen zijn opgeslagen</span><button class="btn primary" type="submit">Opslaan</button></div>
         </form>
       </div>`;
 
@@ -2971,9 +3501,16 @@
             numberPrefix: fd.get('numberPrefix'), numberDigits: fd.get('numberDigits'), printDefault: fd.get('printDefault') === 'on',
           },
         });
+        delete form.dataset.dirty;
+        form.querySelector('[data-dirty-hint]').textContent = 'Alle wijzigingen zijn opgeslagen';
         toast('Instellingen opgeslagen');
       } catch (ex) { toast(ex.message, true); }
     });
+    form.addEventListener('input', () => { form.querySelector('[data-dirty-hint]').textContent = 'Niet-opgeslagen wijzigingen'; });
+    form.querySelectorAll('[data-jump]').forEach((l) => l.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      form.querySelector(l.getAttribute('href')).scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }));
     const test = form.querySelector('[data-test]');
     test.addEventListener('click', async () => {
       test.disabled = true;
