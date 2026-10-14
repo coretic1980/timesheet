@@ -43,8 +43,9 @@ async function destroySession(req, res) {
   res.clearCookie(COOKIE, { path: '/' });
 }
 
-// Beheerders moeten tweestapsverificatie gebruiken (uit te zetten met MFA_REQUIRED_FOR_ADMINS=false).
-const mfaRequired = (u) => u.role === 'admin' && process.env.MFA_REQUIRED_FOR_ADMINS !== 'false';
+// Beheerders en accountants (toegang tot financiële gegevens) moeten tweestapsverificatie gebruiken.
+// Uit te zetten met MFA_REQUIRED_FOR_ADMINS=false.
+const mfaRequired = (u) => ['admin', 'accountant'].includes(u.role) && process.env.MFA_REQUIRED_FOR_ADMINS !== 'false';
 
 async function loadUser(req, res, next) {
   try {
@@ -94,11 +95,17 @@ async function upgradeSession(sessionHash) {
   );
 }
 
-const requireAdmin = (req, res, next) => {
+const ROLE_MSG = { admin: 'Alleen voor beheerders', accountant: 'Alleen voor beheerders en de accountant', employee: 'Niet beschikbaar voor de accountant' };
+
+// Alleen toegang voor de genoemde rollen.
+const requireRole = (...roles) => (req, res, next) => {
   if (!req.user) return next(new HttpError(401, 'Niet ingelogd'));
-  if (req.user.role !== 'admin') return next(new HttpError(403, 'Alleen voor beheerders'));
+  if (!roles.includes(req.user.role)) {
+    return next(new HttpError(403, roles.includes('employee') ? ROLE_MSG.employee : roles.includes('accountant') ? ROLE_MSG.accountant : ROLE_MSG.admin));
+  }
   next();
 };
+const requireAdmin = requireRole('admin');
 
 // Mutaties moeten een custom header meesturen. Andere sites kunnen die niet
 // zetten zonder CORS-preflight, en die staan we niet toe.
@@ -136,7 +143,7 @@ async function cleanupSessions() {
 }
 
 module.exports = {
-  createSession, destroySession, loadUser, requireAuth, requireAdmin, csrfGuard,
+  createSession, destroySession, loadUser, requireAuth, requireAdmin, requireRole, csrfGuard,
   enforceMfaSetup, upgradeSession, mfaRequired,
   loginLimiter, recordLoginFailure, clearLoginFailures, cleanupSessions,
 };

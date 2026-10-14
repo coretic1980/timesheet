@@ -83,6 +83,25 @@ Stack: Node 20 + Express, Postgres (Neon) en een frontend zonder build-stap. De 
   De gemaakte facturen staan in een eigen tabblad.
 - **Koppeling:** de instellingen zijn gegroepeerd (Boekhouding, Factuurregels, Factuur, E-mail), met een vaste opslaanbalk. De app waarschuwt bij niet-opgeslagen wijzigingen.
 
+## Accountant: meekijken en controleren
+
+Geef je accountant (Vanwaarde Administratie & Belastingadvies) een eigen account onder **Beheer › Medewerkers › Medewerker toevoegen** met de rol **Accountant (alleen inzien)**. Dat is een los account in deze app; het staat los van hun gebruiker in e-Boekhouden.
+
+De accountant:
+
+- ziet alleen **Controle**, **Rapportage** en zijn eigen account, en kan niets wijzigen (de server weigert alles behalve inzien);
+- schrijft geen uren en telt niet mee als medewerker in de rapportage;
+- moet bij de eerste keer inloggen tweestapsverificatie instellen, net als een beheerder.
+
+**Controle** heeft vier tabbladen, voor een kwartaal, jaar of eigen periode:
+
+- **Overzicht**: gefactureerde omzet per maand, onderhanden werk op een peildatum, uren per status en automatische signaleringen. Die signaleringen zijn: facturen die niet aansluiten op de uren, dubbele of ontbrekende factuurnummers, teruggedraaide facturen, goedgekeurde uren die na 45 dagen nog niet gefactureerd zijn, ingediende uren die na 14 dagen nog niet beoordeeld zijn, declarabele uren zonder tarief, klanten zonder koppeling met e-Boekhouden en eigen uren die zelf zijn goedgekeurd.
+- **Uren**: alle uurregels met wie ze heeft goedgekeurd en op welke factuur ze staan, te filteren op medewerker, klant, status en declarabel.
+- **Facturen**: alle facturen uit de app met de onderliggende uren en of het bedrag aansluit.
+- **Logboek**: wie wat wanneer heeft gedaan: goedkeuren, afkeuren, factureren, terugdraaien, tarieven, rechten, imports en factuurinstellingen. Regels kunnen niet worden gewijzigd. Het logboek begint bij de installatie van deze versie.
+
+Elk tabblad heeft een CSV-knop voor Excel. Jij ziet als beheerder hetzelfde scherm onder **Controle**.
+
 ## Installatie
 
 ### 1. Database (Neon)

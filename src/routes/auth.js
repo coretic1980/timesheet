@@ -157,7 +157,7 @@ r.post('/mfa/recovery-codes', requireAuth, ah(async (req, res) => {
 }));
 
 r.post('/mfa/disable', requireAuth, ah(async (req, res) => {
-  if (mfaRequired(req.user)) throw new HttpError(400, 'Voor beheerders is tweestapsverificatie verplicht');
+  if (mfaRequired(req.user)) throw new HttpError(400, req.user.role === 'accountant' ? 'Voor de accountant is tweestapsverificatie verplicht' : 'Voor beheerders is tweestapsverificatie verplicht');
   await checkCurrentCode(req.user.id, req.body.code);
   await query(
     `UPDATE users SET totp_enabled = FALSE, totp_secret = NULL, totp_pending_secret = NULL, totp_last_step = NULL,

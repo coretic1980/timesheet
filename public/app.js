@@ -204,23 +204,31 @@
     filter: '<path d="M4 6h16M7 12h10M10 18h4"/>',
     close: '<path d="M6 6l12 12M18 6 6 18"/>',
     chevron: '<path d="m9 6 6 6-6 6"/>',
+    alert: '<path d="M12 4 2.8 19.5h18.4z"/><path d="M12 10v4.2M12 17v.1"/>',
+    info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8v.1"/>',
+    shield: '<path d="M12 3.5 5 6.3v5.2c0 4.3 3 7.6 7 9 4-1.4 7-4.7 7-9V6.3z"/><path d="m9 12 2.2 2.2L15.5 10"/>',
   };
   const icon = (name, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
   const isNarrow = () => window.matchMedia('(max-width: 760px)').matches;
 
+  // Wie mag wat zien. De accountant kan alleen inzien: Controle, Rapportage en zijn eigen account.
   const ROUTES = {
-    overzicht: { title: 'Overzicht', admin: true, render: viewDashboard },
-    uren: { title: 'Uren', render: viewTimesheet },
-    goedkeuren: { title: 'Goedkeuren', admin: true, render: viewApprovals },
-    facturen: { title: 'Facturen', admin: true, render: viewInvoicing },
-    rapportage: { title: 'Rapportage', admin: true, render: viewReports },
-    beheer: { title: 'Beheer', admin: true, render: viewAdmin },
+    overzicht: { title: 'Overzicht', roles: ['admin'], render: viewDashboard },
+    uren: { title: 'Uren', roles: ['admin', 'employee'], render: viewTimesheet },
+    goedkeuren: { title: 'Goedkeuren', roles: ['admin'], render: viewApprovals },
+    facturen: { title: 'Facturen', roles: ['admin'], render: viewInvoicing },
+    controle: { title: 'Controle', roles: ['admin', 'accountant'], render: viewControl },
+    rapportage: { title: 'Rapportage', roles: ['admin', 'accountant'], render: viewReports },
+    beheer: { title: 'Beheer', roles: ['admin'], render: viewAdmin },
     account: { title: 'Account', hidden: true, render: viewAccount },
   };
+  const HOME = { admin: 'overzicht', accountant: 'controle', employee: 'uren' };
+  const canSee = (route) => !route.roles || (state.user && route.roles.includes(state.user.role));
+  const ROLE_LABEL = { admin: 'Beheerder', employee: 'Medewerker', accountant: 'Accountant' };
 
   function currentRoute() {
     const [name, ...params] = location.hash.replace(/^#\/?/, '').split('/');
-    const fallback = state.user && state.user.role === 'admin' ? 'overzicht' : 'uren';
+    const fallback = (state.user && HOME[state.user.role]) || 'uren';
     return { name: ROUTES[name] ? name : fallback, params };
   }
 
@@ -230,13 +238,15 @@
   function shellHTML(active) {
     const isAdmin = state.user.role === 'admin';
     const links = Object.entries(ROUTES)
-      .filter(([, r]) => !r.hidden && (!r.admin || isAdmin))
+      .filter(([, r]) => !r.hidden && canSee(r))
       .map(([key, r]) => `<a href="#/${key}"${key === active ? ' aria-current="page"' : ''}>${r.title}${key === 'goedkeuren' ? pendingBadge() : ''}</a>`)
       .join('');
     // Tabbalk onderaan op mobiel: de vier belangrijkste plekken, de rest onder "Meer".
-    const tabs = isAdmin
-      ? [['overzicht', 'Overzicht', 'home'], ['uren', 'Uren', 'clock'], ['goedkeuren', 'Goedkeuren', 'check'], ['facturen', 'Facturen', 'invoice']]
-      : [['uren', 'Uren', 'clock'], ['account', 'Account', 'user']];
+    const tabs = {
+      admin: [['overzicht', 'Overzicht', 'home'], ['uren', 'Uren', 'clock'], ['goedkeuren', 'Goedkeuren', 'check'], ['facturen', 'Facturen', 'invoice']],
+      accountant: [['controle', 'Controle', 'shield'], ['rapportage', 'Rapportage', 'chart'], ['account', 'Account', 'user']],
+      employee: [['uren', 'Uren', 'clock'], ['account', 'Account', 'user']],
+    }[state.user.role] || [['account', 'Account', 'user']];
     const moreActive = !tabs.some(([k]) => k === active);
     const tabbar = `
       <nav class="tabbar" aria-label="Hoofdmenu mobiel">
@@ -258,7 +268,7 @@
 
   // Bladmenu "Meer" op mobiel.
   function openMoreSheet() {
-    const items = [['rapportage', 'Rapportage', 'chart'], ['beheer', 'Beheer', 'cog'], ['account', 'Account', 'user']];
+    const items = [['controle', 'Controle', 'shield'], ['rapportage', 'Rapportage', 'chart'], ['beheer', 'Beheer', 'cog'], ['account', 'Account', 'user']];
     const sheet = document.createElement('div');
     sheet.className = 'sheet-backdrop';
     sheet.innerHTML = `
@@ -302,8 +312,8 @@
     if (state.user.mfa_setup_required) return renderMfaSetupRequired();
     const { name, params } = currentRoute();
     const route = ROUTES[name];
-    if (route.admin && state.user.role !== 'admin') {
-      location.hash = '#/uren';
+    if (!canSee(route)) {
+      location.hash = `#/${HOME[state.user.role] || 'account'}`;
       return undefined;
     }
     app.innerHTML = shellHTML(name);
@@ -564,7 +574,9 @@
       <div class="login">
         <div class="panel mfa-panel">
           <h1>Tweestapsverificatie instellen</h1>
-          <p class="muted">Voor beheerders is een tweede stap bij het inloggen verplicht, omdat je facturen kunt maken en versturen. Dit duurt één minuut.</p>
+          <p class="muted">${state.user.role === 'accountant'
+            ? 'Omdat je financiële gegevens kunt inzien, is een tweede stap bij het inloggen verplicht.'
+            : 'Voor beheerders is een tweede stap bij het inloggen verplicht, omdat je facturen kunt maken en versturen.'} Dit duurt één minuut.</p>
           <div data-mfa-box></div>
           <div class="row spread small" style="margin-top:1rem"><span class="muted">Ingelogd als ${esc(state.user.email)}</span>
             <button type="button" class="btn ghost small" data-logout>Uitloggen</button></div>
@@ -1958,6 +1970,310 @@
     }));
   }
 
+  /* ================= Controle (accountant) ================= */
+
+  function quarterBounds(offset = 0) {
+    const t = new Date();
+    const q = Math.floor(t.getMonth() / 3) + offset;
+    const first = new Date(t.getFullYear(), q * 3, 1);
+    const last = new Date(t.getFullYear(), q * 3 + 3, 0);
+    const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    return { from: iso(first), to: iso(last) };
+  }
+  const yearBounds = (offset = 0) => { const y = new Date().getFullYear() + offset; return { from: `${y}-01-01`, to: `${y}-12-31` }; };
+  const CONTROL_PRESETS = {
+    q0: ['Dit kwartaal', () => quarterBounds(0)],
+    q1: ['Vorig kwartaal', () => quarterBounds(-1)],
+    y0: ['Dit jaar', () => yearBounds(0)],
+    y1: ['Vorig jaar', () => yearBounds(-1)],
+  };
+  const CONTROL_TABS = { overzicht: 'Overzicht', uren: 'Uren', facturen: 'Facturen', logboek: 'Logboek' };
+  const AUDIT_KINDS = {
+    '': 'Alles', hours: 'Goedkeuren en import', invoice: 'Facturen', rate: 'Tarieven', project: 'Projecten', user: 'Gebruikers', settings: 'Instellingen',
+  };
+  const fmtMonthKey = (k) => { const [y, m] = k.split('-').map(Number); return `${MONTHS_LONG[m - 1]} ${y}`; };
+  const fmtStamp = (iso) => new Intl.DateTimeFormat('nl-NL', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(iso));
+  const minIso = (a, b) => (a < b ? a : b);
+  const qs = (o) => Object.entries(o).filter(([, v]) => v !== '' && v !== null && v !== undefined).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+
+  async function viewControl(view, params) {
+    const tab = CONTROL_TABS[params[0]] ? params[0] : 'overzicht';
+    state.controlPeriod = state.controlPeriod || { ...yearBounds(0), preset: 'y0' };
+    state.controlFilter = state.controlFilter || { user_id: '', client_id: '', status: '', billable: '', action: '' };
+    const { from, to, preset } = state.controlPeriod;
+    const isAcc = state.user.role === 'accountant';
+
+    view.innerHTML = `
+      <div class="stack control">
+        <div class="row spread"><h1>Controle</h1><span class="badge readonly">${icon('shield')} Alleen inzien</span></div>
+        ${isAcc && tab === 'overzicht' ? '<p class="muted small control-intro">Alles hieronder komt rechtstreeks uit de urenregistratie en de facturen die vanuit deze app in e-Boekhouden zijn gemaakt. Je kunt niets wijzigen; met de CSV-knoppen download je de gegevens voor Excel.</p>' : ''}
+        <div class="tabs" role="tablist">${Object.entries(CONTROL_TABS).map(([k, label]) => `
+          <button role="tab" aria-selected="${k === tab}" data-href="#/controle${k === 'overzicht' ? '' : `/${k}`}">${label}</button>`).join('')}</div>
+        <form class="period-bar" id="cperiod">
+          <div class="seg" role="group" aria-label="Periode">${Object.entries(CONTROL_PRESETS).map(([k, [label]]) => `
+            <button type="button" data-preset="${k}" aria-pressed="${preset === k}">${label}</button>`).join('')}</div>
+          <details class="period-custom"${preset ? '' : ' open'}><summary class="btn ghost small">${preset ? 'Andere periode' : fmtRange(from, to)}</summary>
+            <div class="row">
+              <label class="field">Van<input type="date" name="from" value="${from}" required></label>
+              <label class="field">Tot en met<input type="date" name="to" value="${to}" required></label>
+              <button class="btn primary" type="submit" style="align-self:end">Toon</button>
+            </div>
+          </details>
+        </form>
+        <div id="ctab"><p class="muted">Laden…</p></div>
+      </div>`;
+
+    view.querySelectorAll('[data-href]').forEach((b) => b.addEventListener('click', () => { location.hash = b.dataset.href; }));
+    view.querySelectorAll('[data-preset]').forEach((b) => b.addEventListener('click', () => {
+      state.controlPeriod = { ...CONTROL_PRESETS[b.dataset.preset][1](), preset: b.dataset.preset };
+      render();
+    }));
+    const pform = view.querySelector('#cperiod');
+    pform.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (pform.from.value > pform.to.value) { toast('De begindatum ligt na de einddatum', true); return; }
+      state.controlPeriod = { from: pform.from.value, to: pform.to.value, preset: null };
+      render();
+    });
+
+    const box = view.querySelector('#ctab');
+    await ({ overzicht: controlOverview, uren: controlEntries, facturen: controlInvoices, logboek: controlAudit })[tab](box, from, to);
+  }
+
+  async function controlOverview(box, from, to) {
+    const ohwDate = state.controlOhwDate && state.controlOhwDate <= to ? state.controlOhwDate : minIso(to, todayIso());
+    const o = await api(`/accountant/overview?${qs({ from, to, ohw_date: ohwDate })}`);
+    const warns = o.checks.filter((c) => c.level === 'warn');
+    const ohwTotal = o.ohw.approved_value + o.ohw.open_value;
+    const billable = o.hours.by_status.reduce((s, x) => s + x.billable_hours, 0);
+    const tile = (label, value, sub, lvl, href) => `
+      <${href ? `a href="${href}"` : 'div'} class="panel tile${lvl ? ` tile-${lvl}` : ''}">
+        <span class="tile-label">${label}</span><strong class="tile-value">${value}</strong><span class="tile-sub muted small">${sub}</span>
+      </${href ? 'a' : 'div'}>`;
+    const maxMonth = Math.max(1, ...o.invoices.by_month.map((m) => m.total_excl));
+    const checkIcon = { ok: 'check', warn: 'alert', info: 'info' };
+
+    box.innerHTML = `
+      <div class="stack">
+        <div class="tiles">
+          ${tile('Gefactureerd excl. btw', eur0(o.invoices.total_excl), `${o.invoices.count} ${o.invoices.count === 1 ? 'factuur' : 'facturen'}, ${fh(o.invoices.hours)} uur`, 'accent', '#/controle/facturen')}
+          ${tile(`Onderhanden werk ${fmtDate(o.ohw.date, true)}`, eur0(ohwTotal), `${fh(o.ohw.approved_hours + o.ohw.open_hours)} uur nog niet gefactureerd`, '', null)}
+          ${tile('Geschreven uren', fh(o.hours.total), `waarvan ${fh(billable)} declarabel`, '', '#/controle/uren')}
+          ${tile('Signaleringen', String(warns.length), warns.length ? 'Om na te lopen' : 'Geen bijzonderheden', warns.length ? 'warn' : 'ok', null)}
+        </div>
+
+        <section class="panel">
+          <div class="panel-pad"><h2>Signaleringen</h2>
+            <p class="muted small">Automatische controles over ${fmtRange(from, to)}. Oranje is om na te lopen, grijs is ter informatie.</p></div>
+          <ul class="checks">${o.checks.map((c) => `
+            <li class="check-${c.level}">
+              <span class="check-dot" aria-hidden="true">${icon(checkIcon[c.level] || 'more')}</span>
+              <div class="check-body">
+                <strong>${esc(c.title)}</strong>
+                <span class="muted small">${esc(c.text)}</span>
+                ${c.items.length ? `<details${c.level === 'warn' ? ' open' : ''}><summary class="small">${c.items.length} ${c.items.length === 1 ? 'punt' : 'punten'}</summary>
+                  <ul class="check-items">${c.items.map((it) => `
+                    <li>${it.invoice_id ? `<button type="button" class="linkish" data-invoice="${it.invoice_id}">${esc(it.label)}</button>` : `<span>${esc(it.label)}</span>`}<span class="muted">${esc(it.value)}</span></li>`).join('')}</ul></details>` : ''}
+              </div>
+              <span class="badge ${c.level === 'ok' ? 'approved' : c.level === 'warn' ? 'submitted' : ''}">${c.level === 'ok' ? 'In orde' : c.level === 'warn' ? 'Nalopen' : 'Info'}</span>
+            </li>`).join('')}</ul>
+        </section>
+
+        <div class="dash-cols">
+          <section class="panel">
+            <div class="panel-pad"><h2>Omzet per maand</h2><p class="muted small">Gefactureerd vanuit de app, op factuurdatum, excl. btw. Teruggedraaide facturen tellen niet mee.</p></div>
+            ${o.invoices.by_month.length ? `<div class="table-wrap"><table class="data">
+              <thead><tr><th>Maand</th><th class="num">Facturen</th><th class="num">Uren</th><th class="num">Bedrag</th><th class="month-bar-col"></th></tr></thead>
+              <tbody>${o.invoices.by_month.map((m) => `<tr><td>${fmtMonthKey(m.month)}</td><td class="num">${m.count}</td><td class="num">${fh(m.hours)}</td><td class="num">${eur(m.total_excl)}</td><td class="month-bar-col">${bar(m.total_excl / maxMonth)}</td></tr>`).join('')}</tbody>
+              <tfoot><tr><td>Totaal</td><td class="num">${o.invoices.count}</td><td class="num">${fh(o.invoices.hours)}</td><td class="num">${eur(o.invoices.total_excl)}</td><td class="month-bar-col"></td></tr></tfoot>
+            </table></div>` : '<div class="empty small"><p>Geen facturen in deze periode.</p></div>'}
+          </section>
+
+          <section class="panel">
+            <div class="panel-pad stack">
+              <div class="row spread"><h2>Onderhanden werk</h2>
+                <label class="field ohw-date">Peildatum<input type="date" data-ohw value="${o.ohw.date}" max="${to}"></label></div>
+              <p class="muted small">Declarabele uren tot en met de peildatum die op die datum nog niet gefactureerd waren. Niet-goedgekeurde uren zijn gewaardeerd tegen het tarief dat bij goedkeuring zou gelden.</p>
+            </div>
+            ${o.ohw.rows.length ? `<div class="table-wrap"><table class="data">
+              <thead><tr><th>Klant</th><th class="num">Goedgekeurd</th><th class="num">Nog niet goedgekeurd</th><th class="num">Totaal</th></tr></thead>
+              <tbody>${o.ohw.rows.map((x) => `<tr><td>${esc(x.client_name)}</td>
+                <td class="num">${eur(x.approved_value)}<span class="muted small block">${fh(x.approved_hours)} uur</span></td>
+                <td class="num">${x.open_hours ? `${eur(x.open_value)}<span class="muted small block">${fh(x.open_hours)} uur</span>` : '–'}</td>
+                <td class="num"><strong>${eur(x.approved_value + x.open_value)}</strong></td></tr>`).join('')}</tbody>
+              <tfoot><tr><td>Totaal</td><td class="num">${eur(o.ohw.approved_value)}</td><td class="num">${eur(o.ohw.open_value)}</td><td class="num">${eur(ohwTotal)}</td></tr></tfoot>
+            </table></div>` : `<div class="empty small"><p>Geen onderhanden werk op ${fmtDate(o.ohw.date, true)}.</p></div>`}
+          </section>
+        </div>
+
+        <section class="panel">
+          <div class="panel-pad"><h2>Uren per status</h2><p class="muted small">Geschreven uren met een werkdatum in ${fmtRange(from, to)}.</p></div>
+          <div class="table-wrap"><table class="data">
+            <thead><tr><th>Status</th><th class="num">Uren</th><th class="num">Declarabel</th><th class="num">Waarde (goedgekeurd)</th></tr></thead>
+            <tbody>${['draft', 'rejected', 'submitted', 'approved', 'invoiced'].map((st) => {
+              const x = o.hours.by_status.find((y) => y.status === st) || { hours: 0, billable_hours: 0, value: 0 };
+              return `<tr><td>${statusBadge(st)}</td><td class="num">${fh(x.hours)}</td><td class="num">${fh(x.billable_hours)}</td><td class="num">${['approved', 'invoiced'].includes(st) ? eur(x.value) : '–'}</td></tr>`;
+            }).join('')}</tbody>
+            <tfoot><tr><td>Totaal</td><td class="num">${fh(o.hours.total)}</td><td class="num">${fh(billable)}</td><td class="num">${eur(o.hours.approved_value)}</td></tr></tfoot>
+          </table></div>
+        </section>
+      </div>`;
+
+    box.querySelector('[data-ohw]').addEventListener('change', (e) => {
+      if (!e.target.value) return;
+      state.controlOhwDate = e.target.value;
+      controlOverview(box, from, to);
+    });
+    box.querySelectorAll('[data-invoice]').forEach((b) => b.addEventListener('click', () => openControlInvoice(Number(b.dataset.invoice), from, to)));
+  }
+
+  function entryFilterHTML(f, filters) {
+    const sel = (name, label, options) => `<label class="field">${label}<select name="${name}">${options}</select></label>`;
+    return `
+      <form class="panel panel-pad control-filter" id="cfilter">
+        ${sel('user_id', 'Medewerker', opt('', 'Iedereen', !f.user_id) + filters.users.map((u) => opt(u.id, u.name + (u.active ? '' : ' (inactief)'), String(u.id) === String(f.user_id))).join(''))}
+        ${sel('client_id', 'Klant', opt('', 'Alle klanten', !f.client_id) + opt('intern', 'Intern', f.client_id === 'intern') + filters.clients.map((c) => opt(c.id, c.name, String(c.id) === String(f.client_id))).join(''))}
+        ${sel('status', 'Status', opt('', 'Alle statussen', !f.status) + opt('approved,invoiced', 'Goedgekeurd of gefactureerd', f.status === 'approved,invoiced')
+          + Object.entries(STATUS).map(([k, v]) => opt(k, v, f.status === k)).join(''))}
+        ${sel('billable', 'Declarabel', opt('', 'Alles', !f.billable) + opt('true', 'Alleen declarabel', f.billable === 'true') + opt('false', 'Alleen niet declarabel', f.billable === 'false'))}
+      </form>`;
+  }
+
+  async function controlEntries(box, from, to) {
+    const f = state.controlFilter;
+    const query = { from, to, user_id: f.user_id, client_id: f.client_id, status: f.status, billable: f.billable };
+    const [filters, data] = await Promise.all([
+      state.controlFilters ? Promise.resolve(state.controlFilters) : api('/accountant/filters'),
+      api(`/accountant/entries?${qs(query)}`),
+    ]);
+    state.controlFilters = filters;
+    const t = data.totals;
+    box.innerHTML = `
+      <div class="stack">
+        ${entryFilterHTML(f, filters)}
+        <div class="row spread">
+          <p class="muted" style="margin:0"><strong>${t.count}</strong> ${t.count === 1 ? 'regel' : 'regels'}, <strong>${fh(t.hours)}</strong> uur, <strong>${eur(t.value)}</strong> aan goedgekeurde waarde</p>
+          <a class="btn" href="/api/accountant/entries.csv?${qs(query)}" download>CSV downloaden</a>
+        </div>
+        ${data.truncated ? '<div class="notice warn small">Er zijn meer dan 5.000 regels; hieronder staan de eerste 5.000. De CSV bevat alles.</div>' : ''}
+        <section class="panel">
+          ${data.rows.length ? `<div class="table-wrap"><table class="data control-entries">
+            <thead><tr><th>Datum</th><th>Medewerker</th><th>Klant / project</th><th class="num">Uren</th><th class="num">Tarief</th><th class="num">Bedrag</th><th>Status</th><th>Goedgekeurd door</th><th>Factuur</th><th>Omschrijving</th></tr></thead>
+            <tbody>${data.rows.map((x) => `<tr>
+              <td class="nowrap">${fmtDate(x.work_date, true)}</td>
+              <td>${esc(x.user_name)}</td>
+              <td>${esc(x.client_name || 'Intern')} / ${esc(x.project_name)}${x.activity_name ? `<span class="muted small block">${esc(x.activity_name)}</span>` : ''}${x.billable ? '' : '<span class="muted small block">niet declarabel</span>'}</td>
+              <td class="num">${fh(x.hours)}</td>
+              <td class="num">${x.rate === null ? '–' : eur(x.rate)}</td>
+              <td class="num">${x.rate === null ? '–' : eur(x.value)}</td>
+              <td>${statusBadge(x.status)}</td>
+              <td>${x.approved_by_name ? `${esc(x.approved_by_name)}<span class="muted small block">${fmtDate(String(x.approved_at).slice(0, 10), true)}</span>` : '<span class="muted">–</span>'}</td>
+              <td>${x.invoice_id ? `<button type="button" class="linkish" data-invoice="${x.invoice_id}">${esc(x.invoice_number || `#${x.invoice_id}`)}</button>` : (x.status === 'invoiced' ? '<span class="muted small">buiten de app</span>' : '')}</td>
+              <td class="desc">${esc(x.description) || '<span class="muted">–</span>'}</td>
+            </tr>`).join('')}</tbody>
+          </table></div>` : '<div class="empty"><h2>Geen uren</h2><p>Geen uren voor deze periode en dit filter.</p></div>'}
+        </section>
+      </div>`;
+    box.querySelector('#cfilter').addEventListener('change', (e) => {
+      state.controlFilter[e.target.name] = e.target.value;
+      controlEntries(box, from, to);
+    });
+    box.querySelectorAll('[data-invoice]').forEach((b) => b.addEventListener('click', () => openControlInvoice(Number(b.dataset.invoice), from, to)));
+  }
+
+  const matchBadge = (i) => (i.reverted_at ? '<span class="badge">Teruggedraaid</span>'
+    : i.matches ? '<span class="badge approved">Sluit aan</span>'
+      : i.entry_count ? '<span class="badge submitted">Wijkt af</span>' : '<span class="badge submitted">Geen uren</span>');
+
+  async function controlInvoices(box, from, to) {
+    const list = await api(`/accountant/invoices?${qs({ from, to })}`);
+    state.controlInvoices = list;
+    const active = list.filter((i) => !i.reverted_at);
+    const total = active.reduce((s, i) => s + i.total_excl, 0);
+    box.innerHTML = `
+      <div class="stack">
+        <div class="row spread">
+          <p class="muted" style="margin:0"><strong>${active.length}</strong> ${active.length === 1 ? 'factuur' : 'facturen'}, <strong>${eur(total)}</strong> excl. btw${list.length > active.length ? `, ${list.length - active.length} teruggedraaid` : ''}</p>
+          <a class="btn" href="/api/accountant/invoices.csv?${qs({ from, to })}" download>CSV downloaden</a>
+        </div>
+        <section class="panel">
+          ${list.length ? `<div class="table-wrap"><table class="data">
+            <thead><tr><th>Factuurnummer</th><th>Factuurdatum</th><th>Klant</th><th>Periode</th><th class="num">Uren</th><th class="num">Excl. btw</th><th>Aansluiting uren</th><th>Gemaakt door</th></tr></thead>
+            <tbody>${list.map((i) => `<tr${i.reverted_at ? ' class="muted"' : ''}>
+              <td><button type="button" class="linkish strong" data-invoice="${i.id}">${esc(i.number || `#${i.eb_invoice_id || i.id}`)}</button>${/^https:\/\//i.test(i.pdf_url || '') ? ` <a href="${esc(i.pdf_url)}" target="_blank" rel="noopener noreferrer">PDF</a>` : ''}</td>
+              <td class="nowrap">${fmtDate(i.invoice_date, true)}</td>
+              <td>${esc(i.client_name)}${i.eb_relation_code ? `<span class="muted small block">${esc(i.eb_relation_code)}</span>` : ''}</td>
+              <td class="nowrap">${fmtRange(i.period_from, i.period_to)}</td>
+              <td class="num">${fh(i.hours)}</td>
+              <td class="num">${eur(i.total_excl)}</td>
+              <td>${matchBadge(i)}</td>
+              <td>${esc(i.created_by_name || '')}</td>
+            </tr>`).join('')}</tbody>
+            <tfoot><tr><td>Totaal (zonder teruggedraaid)</td><td></td><td></td><td></td><td class="num">${fh(active.reduce((s, i) => s + i.hours, 0))}</td><td class="num">${eur(total)}</td><td></td><td></td></tr></tfoot>
+          </table></div>` : '<div class="empty"><h2>Geen facturen</h2><p>In deze periode zijn geen facturen vanuit de app gemaakt.</p></div>'}
+        </section>
+        <p class="muted small">Alleen facturen die vanuit deze app zijn gemaakt. Facturen die rechtstreeks in e-Boekhouden zijn gemaakt, staan in e-Boekhouden.</p>
+      </div>`;
+    box.querySelectorAll('[data-invoice]').forEach((b) => b.addEventListener('click', () => openControlInvoice(Number(b.dataset.invoice), from, to)));
+  }
+
+  // Factuur met de onderliggende uurregels, in het zijpaneel.
+  async function openControlInvoice(id, from, to) {
+    const body = invoiceDrawer('Factuur');
+    body.innerHTML = '<p class="muted">Laden…</p>';
+    try {
+      let inv = (state.controlInvoices || []).find((i) => i.id === id);
+      if (!inv) inv = (await api(`/accountant/invoices?${qs({ from: '2000-01-01', to: '2999-12-31' })}`)).find((i) => i.id === id);
+      if (!inv) throw new Error('Factuur niet gevonden');
+      document.getElementById('drawer-title').textContent = `Factuur ${inv.number || `#${inv.eb_invoice_id || inv.id}`}`;
+      const entries = inv.reverted_at ? { rows: [] } : await api(`/accountant/entries?${qs({ from: inv.period_from, to: inv.period_to, invoice_id: inv.id })}`);
+      const diff = Math.round((inv.total_excl - inv.entry_value) * 100) / 100;
+      body.innerHTML = `
+        <div class="stack">
+          <dl class="facts">
+            <dt>Klant</dt><dd>${esc(inv.client_name)}${inv.eb_relation_code ? ` (${esc(inv.eb_relation_code)})` : ''}</dd>
+            <dt>Factuurdatum</dt><dd>${fmtDate(inv.invoice_date, true)}</dd>
+            <dt>Periode</dt><dd>${fmtRange(inv.period_from, inv.period_to)}</dd>
+            <dt>Bedrag excl. btw</dt><dd><strong>${eur(inv.total_excl)}</strong> · ${fh(inv.hours)} uur</dd>
+            <dt>Gemaakt door</dt><dd>${esc(inv.created_by_name || '–')}, ${fmtStamp(inv.created_at)}</dd>
+            ${inv.reverted_at ? `<dt>Teruggedraaid</dt><dd>${fmtStamp(inv.reverted_at)}${inv.reverted_by_name ? ` door ${esc(inv.reverted_by_name)}` : ''}</dd>` : ''}
+            <dt>Aansluiting</dt><dd>${matchBadge(inv)}${!inv.reverted_at && !inv.matches && inv.entry_count ? ` <span class="muted small">verschil ${eur(diff)}</span>` : ''}</dd>
+          </dl>
+          ${inv.reverted_at ? '<div class="notice small">Deze factuur is teruggedraaid. De uren zijn weer vrijgegeven om opnieuw te factureren; in e-Boekhouden hoort er een creditfactuur of verwijdering bij.</div>' : `
+          <h3>Gefactureerde uren</h3>
+          ${entries.rows.length ? `<div class="table-wrap"><table class="data lines">
+            <thead><tr><th>Datum</th><th>Medewerker / project</th><th class="num">Uren</th><th class="num">Tarief</th><th class="num">Bedrag</th></tr></thead>
+            <tbody>${entries.rows.map((x) => `<tr><td class="nowrap">${fmtDate(x.work_date)}</td><td>${esc(x.user_name)}<span class="muted small block">${esc(x.project_name)}${x.activity_name ? `, ${esc(x.activity_name)}` : ''}</span></td><td class="num">${fh(x.hours)}</td><td class="num">${eur(x.rate)}</td><td class="num">${eur(x.value)}</td></tr>`).join('')}</tbody>
+            <tfoot><tr><td>Totaal</td><td></td><td class="num">${fh(entries.totals.hours)}</td><td></td><td class="num">${eur(entries.totals.value)}</td></tr></tfoot>
+          </table></div>` : '<p class="muted">Er zijn geen uurregels aan deze factuur gekoppeld.</p>'}`}
+        </div>`;
+    } catch (e) {
+      body.innerHTML = `<div class="notice error">${esc(e.message)}</div>`;
+    }
+  }
+
+  async function controlAudit(box, from, to) {
+    const f = state.controlFilter;
+    const rows = await api(`/accountant/audit?${qs({ from, to, action: f.action })}`);
+    box.innerHTML = `
+      <div class="stack">
+        <div class="row spread">
+          <label class="field">Soort<select data-audit-kind>${Object.entries(AUDIT_KINDS).map(([k, v]) => opt(k, v, (f.action || '') === k)).join('')}</select></label>
+          <a class="btn" href="/api/accountant/audit.csv?${qs({ from, to })}" download style="align-self:end">CSV downloaden</a>
+        </div>
+        <section class="panel">
+          ${rows.length ? `<ul class="audit">${rows.map((x) => `
+            <li><time datetime="${esc(x.at)}">${fmtStamp(x.at)}</time><span class="audit-who">${esc(x.user_name || 'Systeem')}</span><span class="audit-what">${esc(x.summary)}</span></li>`).join('')}</ul>`
+          : '<div class="empty"><h2>Niets vastgelegd</h2><p>Geen handelingen in deze periode.</p></div>'}
+        </section>
+        <p class="muted small">Het logboek legt goedkeuren, afkeuren, factureren, terugdraaien, tariefwijzigingen, gebruikers- en rechtenwijzigingen, imports en wijzigingen in de factuurinstellingen vast. Regels kunnen niet worden gewijzigd of verwijderd. Het logboek loopt vanaf de installatie van deze versie.</p>
+      </div>`;
+    box.querySelector('[data-audit-kind]').addEventListener('change', (e) => {
+      state.controlFilter.action = e.target.value;
+      controlAudit(box, from, to);
+    });
+  }
+
   /* ================= Goedkeuren ================= */
 
   async function viewApprovals(view, params) {
@@ -2187,14 +2503,14 @@
 
   // projectIds: null = alle projecten van de klant met uren in de periode.
   // Zijpaneel (desktop) of volledig scherm (mobiel) voor de factuur.
-  function invoiceDrawer() {
+  function invoiceDrawer(title = 'Factuur') {
     let d = document.querySelector('.drawer-backdrop');
-    if (d) return d.querySelector('.drawer-body');
+    if (d) { d.querySelector('#drawer-title').textContent = title; return d.querySelector('.drawer-body'); }
     d = document.createElement('div');
     d.className = 'drawer-backdrop';
     d.innerHTML = `
       <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
-        <header class="drawer-head"><h2 id="drawer-title">Factuur</h2><button type="button" class="btn icon-btn ghost" data-drawer-close aria-label="Sluiten">${icon('close')}</button></header>
+        <header class="drawer-head"><h2 id="drawer-title">${esc(title)}</h2><button type="button" class="btn icon-btn ghost" data-drawer-close aria-label="Sluiten">${icon('close')}</button></header>
         <div class="drawer-body"></div>
       </aside>`;
     const close = () => { d.remove(); document.body.classList.remove('drawer-open'); document.removeEventListener('keydown', onKey); };
@@ -2462,13 +2778,24 @@
         <label class="field">Naam<input name="name" value="${esc(u.name)}" required maxlength="120"></label>
         ${u.id ? '' : '<label class="field">E-mailadres<input name="email" type="email" required></label>'}
         <label class="field">Rol<select name="role">
-          ${opt('employee', 'Medewerker', u.role !== 'admin')}${opt('admin', 'Beheerder', u.role === 'admin')}</select></label>
-        <label class="field">Contracturen per week<input name="weekly_hours" inputmode="decimal" value="${fmtInput(u.weekly_hours ?? 40)}"></label>
+          ${opt('employee', 'Medewerker', !u.role || u.role === 'employee')}${opt('admin', 'Beheerder', u.role === 'admin')}${opt('accountant', 'Accountant (alleen inzien)', u.role === 'accountant')}</select></label>
+        <label class="field" data-weekly${u.role === 'accountant' ? ' hidden' : ''}>Contracturen per week<input name="weekly_hours" inputmode="decimal" value="${fmtInput(u.weekly_hours ?? 40)}"></label>
       </div>
+      <p class="notice small" data-acc-hint${u.role === 'accountant' ? '' : ' hidden'}>De accountant kan Controle en Rapportage inzien en CSV-bestanden downloaden, maar niets wijzigen. Hij schrijft geen uren en telt niet mee als medewerker. Tweestapsverificatie is verplicht bij de eerste keer inloggen.</p>
       <label class="field">${u.id ? 'Nieuw wachtwoord' : 'Wachtwoord'}
         <span class="hint">${u.id ? 'Leeg laten om niet te wijzigen. ' : ''}Minstens 10 tekens. Geef het persoonlijk door.</span>
         <input name="password" type="text" autocomplete="new-password"${u.id ? '' : ' required'} minlength="10"></label>
-      ${u.id ? `<label class="check"><input type="checkbox" name="active"${u.active ? ' checked' : ''}> Actief (kan inloggen en uren schrijven)</label>` : ''}`;
+      ${u.id ? `<label class="check"><input type="checkbox" name="active"${u.active ? ' checked' : ''}> Actief (kan inloggen)</label>` : ''}`;
+  }
+  // Rol accountant: contracturen verbergen en uitleg tonen.
+  function bindRoleField(form) {
+    const sync = () => {
+      const acc = form.role.value === 'accountant';
+      form.querySelector('[data-weekly]').hidden = acc;
+      form.querySelector('[data-acc-hint]').hidden = !acc;
+      if (acc) form.weekly_hours.value = '0';
+    };
+    form.role.addEventListener('change', sync);
   }
 
   async function adminUsers(el) {
@@ -2481,9 +2808,9 @@
           <tbody>${users.map((u) => `
             <tr>
               <td>${esc(u.name)}</td><td>${esc(u.email)}</td>
-              <td>${u.role === 'admin' ? 'Beheerder' : 'Medewerker'}</td>
+              <td>${ROLE_LABEL[u.role] || u.role}</td>
               <td class="num">${fh(u.weekly_hours)}</td>
-              <td>${u.totp_enabled ? '<span class="badge approved">Aan</span>' : (u.role === 'admin' ? '<span class="badge submitted">Nog instellen</span>' : '<span class="muted">Uit</span>')}</td>
+              <td>${u.totp_enabled ? '<span class="badge approved">Aan</span>' : (['admin', 'accountant'].includes(u.role) ? '<span class="badge submitted">Nog instellen</span>' : '<span class="muted">Uit</span>')}</td>
               <td>${u.active ? 'Actief' : '<span class="muted">Inactief</span>'}</td>
               <td class="right"><button class="btn small" data-edit="${u.id}">Wijzigen</button></td>
             </tr>`).join('')}</tbody>
@@ -2493,6 +2820,7 @@
       title: 'Medewerker toevoegen',
       submit: 'Toevoegen',
       body: userForm(),
+      onOpen: bindRoleField,
       onSubmit: async (fd) => {
         await api('/admin/users', {
           method: 'POST',
@@ -2501,7 +2829,9 @@
             weekly_hours: parseHours(fd.get('weekly_hours')), password: fd.get('password'),
           },
         });
-        toast('Medewerker toegevoegd. Koppel hem of haar nu aan projecten.');
+        toast(fd.get('role') === 'accountant'
+          ? 'Accountant toegevoegd. Geef het e-mailadres en wachtwoord persoonlijk door; bij de eerste keer inloggen stelt hij 2FA in.'
+          : 'Medewerker toegevoegd. Koppel hem of haar nu aan projecten.');
         adminUsers(el);
       },
     }));
@@ -2513,15 +2843,16 @@
           <div class="notice"><strong>Tweestapsverificatie staat aan.</strong> Telefoon kwijt en geen herstelcodes meer?
             <div style="margin-top:0.5rem"><button type="button" class="btn small danger" data-mfa-reset>2FA resetten</button></div></div>` : ''),
         onOpen: (form) => {
+          bindRoleField(form);
           const b = form.querySelector('[data-mfa-reset]');
           if (!b) return;
           b.addEventListener('click', async () => {
-            if (!(await confirmDialog('2FA resetten', `De tweestapsverificatie van ${esc(u.name)} wordt uitgezet en alle sessies worden afgemeld.${u.role === 'admin' ? ' Bij de volgende keer inloggen moet het opnieuw worden ingesteld.' : ''}`, '2FA resetten', true))) return;
+            if (!(await confirmDialog('2FA resetten', `De tweestapsverificatie van ${esc(u.name)} wordt uitgezet en alle sessies worden afgemeld.${['admin', 'accountant'].includes(u.role) ? ' Bij de volgende keer inloggen moet het opnieuw worden ingesteld.' : ''}`, '2FA resetten', true))) return;
             try {
               await api(`/admin/users/${u.id}/mfa-reset`, { method: 'POST' });
               toast(`2FA van ${u.name} gereset`);
               form.closest('dialog').close();
-              if (u.id === state.user.id) { state.user.mfa_setup_required = state.user.role === 'admin'; render(); } else adminUsers(el);
+              if (u.id === state.user.id) { state.user.mfa_setup_required = ['admin', 'accountant'].includes(state.user.role); render(); } else adminUsers(el);
             } catch (ex) { toast(ex.message, true); }
           });
         },
@@ -3583,7 +3914,7 @@
     view.innerHTML = `
       <div class="stack" style="max-width:480px">
         <h1>Account</h1>
-        <p class="muted">${esc(state.user.name)}, ${esc(state.user.email)}</p>
+        <p class="muted">${esc(state.user.name)}, ${esc(state.user.email)} · ${ROLE_LABEL[state.user.role] || ''}</p>
         <form class="panel panel-pad stack" id="pw">
           <h2>Wachtwoord wijzigen</h2>
           <label class="field">Huidig wachtwoord<input type="password" name="current" autocomplete="current-password" required></label>
@@ -3591,8 +3922,15 @@
           <div><button class="btn primary" type="submit">Wachtwoord wijzigen</button></div>
         </form>
         <section class="panel panel-pad stack" id="mfa"><h2>Tweestapsverificatie</h2><p class="muted">Laden…</p></section>
+        <div><button class="btn" type="button" data-logout-account>${icon('logout')} Uitloggen</button></div>
       </div>`;
     renderMfaSection(view.querySelector('#mfa'));
+    view.querySelector('[data-logout-account]').addEventListener('click', async () => {
+      await api('/auth/logout', { method: 'POST' }).catch(() => {});
+      state.user = null;
+      location.hash = '';
+      render();
+    });
     const form = view.querySelector('#pw');
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -3626,7 +3964,7 @@
     }
     box.innerHTML = `
       <h2>Tweestapsverificatie</h2>
-      <p>Staat <strong>aan</strong>${st.required ? ' (verplicht voor beheerders)' : ''}. Je hebt nog <strong>${st.recovery_left}</strong> ${st.recovery_left === 1 ? 'herstelcode' : 'herstelcodes'}.</p>
+      <p>Staat <strong>aan</strong>${st.required ? ` (verplicht voor ${state.user.role === 'accountant' ? 'de accountant' : 'beheerders'})` : ''}. Je hebt nog <strong>${st.recovery_left}</strong> ${st.recovery_left === 1 ? 'herstelcode' : 'herstelcodes'}.</p>
       ${st.recovery_left < 3 ? '<div class="notice warn">Je hebt bijna geen herstelcodes meer. Maak nieuwe aan.</div>' : ''}
       <div class="row">
         <button class="btn" type="button" data-new-codes>Nieuwe herstelcodes</button>

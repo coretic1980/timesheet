@@ -5,11 +5,15 @@ CREATE TABLE IF NOT EXISTS users (
   email         TEXT NOT NULL UNIQUE,
   name          TEXT NOT NULL,
   password_hash TEXT NOT NULL,
-  role          TEXT NOT NULL DEFAULT 'employee' CHECK (role IN ('admin', 'employee')),
+  role          TEXT NOT NULL DEFAULT 'employee',
   weekly_hours  NUMERIC(4,1) NOT NULL DEFAULT 40,
   active        BOOLEAN NOT NULL DEFAULT TRUE,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Rollen: beheerder, medewerker en accountant (alleen inzien)
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin', 'employee', 'accountant'));
 
 -- Tweestapsverificatie (TOTP)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN NOT NULL DEFAULT FALSE;
@@ -101,6 +105,8 @@ CREATE TABLE IF NOT EXISTS invoices (
 -- Teruggedraaide facturen (uren weer vrijgegeven om opnieuw te factureren)
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS reverted_at TIMESTAMPTZ;
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS reverted_by INT REFERENCES users(id);
+-- Factuurdatum zoals naar e-Boekhouden gestuurd (oudere facturen: aanmaakdatum)
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS invoice_date DATE;
 
 CREATE TABLE IF NOT EXISTS time_entries (
   id               SERIAL PRIMARY KEY,
@@ -133,3 +139,15 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value JSONB NOT NULL
 );
+
+-- Logboek van financieel relevante handelingen (goedkeuren, factureren, tarieven, rechten).
+-- Alleen toevoegen; de app wijzigt of verwijdert hier niets.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id       BIGSERIAL PRIMARY KEY,
+  at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  user_id  INT REFERENCES users(id),
+  action   TEXT NOT NULL,
+  summary  TEXT NOT NULL,
+  details  JSONB
+);
+CREATE INDEX IF NOT EXISTS audit_log_at_idx ON audit_log(at);

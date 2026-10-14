@@ -1,6 +1,7 @@
 const express = require('express');
 const { query } = require('../db');
 const { ah, HttpError, isoDate, workdaysBetween, todayIso, round2 } = require('../util');
+const { sendCsv } = require('../csv');
 
 const r = express.Router();
 
@@ -23,7 +24,7 @@ r.get('/summary', ah(async (req, res) => {
        FROM users u
        LEFT JOIN time_entries e ON e.user_id = u.id AND e.work_date BETWEEN $1 AND $2
        LEFT JOIN projects p ON p.id = e.project_id
-      WHERE u.active
+      WHERE u.active AND u.role <> 'accountant'
       GROUP BY u.id
       ORDER BY u.name`,
     [from, to]
@@ -97,22 +98,11 @@ r.get('/export.csv', ah(async (req, res) => {
       ORDER BY e.work_date, u.name, p.name`,
     [from, to]
   );
-  // Puntkomma en decimale komma, zodat Nederlandse Excel het direct goed opent.
-  const cell = (v) => {
-    if (v === null || v === undefined) return '';
-    let s = typeof v === 'number' ? String(v).replace('.', ',') : String(v);
-    // Tekst die met = + - @ begint, zou Excel als formule uitvoeren: neutraliseren.
-    if (typeof v !== 'number' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
-    return /[;"\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
   const header = ['Datum', 'Medewerker', 'Klant', 'Projectcode', 'Project', 'Activiteit', 'Uren', 'Tarief', 'Status', 'Omschrijving', 'Factuur'];
-  const lines = rows.map((x) => [
+  sendCsv(res, `uren_${from}_${to}.csv`, header, rows.map((x) => [
     x.work_date, x.user_name, x.client_name || 'Intern', x.code, x.project_name, x.activity_name, x.hours, x.rate,
     STATUS_NL[x.status], x.description, x.eb_invoice_number,
-  ].map(cell).join(';'));
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="uren_${from}_${to}.csv"`);
-  res.send(`\uFEFF${header.join(';')}\r\n${lines.join('\r\n')}\r\n`);
+  ]));
 }));
 
 module.exports = r;

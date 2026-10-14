@@ -1,7 +1,7 @@
 const path = require('path');
 const express = require('express');
 const { migrate, seedAdmin, pool } = require('./db');
-const { loadUser, requireAuth, requireAdmin, csrfGuard, cleanupSessions, enforceMfaSetup } = require('./auth');
+const { loadUser, requireAdmin, requireRole, csrfGuard, cleanupSessions, enforceMfaSetup } = require('./auth');
 const { query } = require('./db');
 const { HttpError } = require('./util');
 const { EbError } = require('./eboekhouden');
@@ -40,11 +40,13 @@ app.get('/healthz', async (req, res) => {
 app.use('/api', express.json({ limit: '1mb' }), csrfGuard, loadUser);
 app.use('/api/auth', require('./routes/auth'));
 // Alles behalve /api/auth vereist dat een beheerder 2FA heeft ingesteld.
-app.use('/api/timesheet', requireAuth, enforceMfaSetup, require('./routes/timesheet'));
+// De accountant schrijft geen uren en kan alleen inzien (rapportage en controle).
+app.use('/api/timesheet', requireRole('admin', 'employee'), enforceMfaSetup, require('./routes/timesheet'));
 app.use('/api/approvals', requireAdmin, enforceMfaSetup, require('./routes/approvals'));
 app.use('/api/admin', requireAdmin, enforceMfaSetup, require('./routes/admin'));
 app.use('/api/invoicing', requireAdmin, enforceMfaSetup, require('./routes/invoicing'));
-app.use('/api/reports', requireAdmin, enforceMfaSetup, require('./routes/reports'));
+app.use('/api/reports', requireRole('admin', 'accountant'), enforceMfaSetup, require('./routes/reports'));
+app.use('/api/accountant', requireRole('admin', 'accountant'), enforceMfaSetup, require('./routes/accountant'));
 app.use('/api', (req, res, next) => next(new HttpError(404, 'Onbekend endpoint')));
 
 // Altijd laten controleren of er een nieuwe versie is (ETag), zodat een deploy direct zichtbaar is.

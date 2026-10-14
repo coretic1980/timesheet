@@ -3,6 +3,12 @@ const bcrypt = require('bcryptjs');
 const { query, tx, getEbSettings, setEbSettings } = require('../db');
 const { ah, HttpError, str, num, intParam, isoDate, normName, poFromName } = require('../util');
 const eb = require('../eboekhouden');
+const { audit, fhNl, regels } = require('../audit');
+
+const ROLES = ['admin', 'employee', 'accountant'];
+const ROLE_NL = { admin: 'beheerder', employee: 'medewerker', accountant: 'accountant' };
+const eurNl = (v) => (v === null || v === undefined ? 'leeg' : `€ ${fhNl(v)}`);
+const nameOf = async (table, id) => ((await query(`SELECT name FROM ${table} WHERE id = $1`, [id])).rows[0] || {}).name || `#${id}`;
 
 const r = express.Router();
 
@@ -38,7 +44,7 @@ r.post('/users', ah(async (req, res) => {
   const email = str(req.body.email, { name: 'E-mail', max: 200 }).toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new HttpError(400, 'Ongeldig e-mailadres');
   const name = str(req.body.name, { name: 'Naam', max: 120 });
-  const role = req.body.role === 'admin' ? 'admin' : 'employee';
+  const role = ROLES.includes(req.body.role) ? req.body.role : 'employee';
   const weekly = num(req.body.weekly_hours ?? 40, { min: 0, max: 80, name: 'uren per week' });
   const hash = await bcrypt.hash(checkPassword(req.body.password || ''), 12);
   try {
@@ -47,6 +53,7 @@ r.post('/users', ah(async (req, res) => {
        RETURNING ${USER_COLS}`,
       [email, name, hash, role, weekly]
     );
+    await audit(null, req.user.id, 'user.create', `Gebruiker ${name} (${email}) aangemaakt als ${ROLE_NL[role]}`, { user_id: rows[0].id, role });
     res.status(201).json(rows[0]);
   } catch (err) {
     if (err.code === '23505') throw new HttpError(409, 'Dit e-mailadres is al in gebruik');
@@ -56,12 +63,14 @@ r.post('/users', ah(async (req, res) => {
 
 r.patch('/users/:id', ah(async (req, res) => {
   const id = intParam(req.params.id);
+  const before = (await query(`SELECT ${USER_COLS} FROM users WHERE id = $1`, [id])).rows[0];
+  if (!before) throw new HttpError(404, 'Medewerker niet gevonden');
   const u = updater();
   const b = req.body;
   if (b.name !== undefined) u.set('name', str(b.name, { name: 'Naam', max: 120 }));
   if (b.role !== undefined) {
     if (id === req.user.id && b.role !== 'admin') throw new HttpError(400, 'Je kunt je eigen beheerrechten niet intrekken');
-    u.set('role', b.role === 'admin' ? 'admin' : 'employee');
+    u.set('role', ROLES.includes(b.role) ? b.role : 'employee');
   }
   if (b.weekly_hours !== undefined) u.set('weekly_hours', num(b.weekly_hours, { min: 0, max: 80, name: 'uren per week' }));
   if (b.active !== undefined) {
@@ -71,7 +80,15 @@ r.patch('/users/:id', ah(async (req, res) => {
   if (b.password) u.set('password_hash', await bcrypt.hash(checkPassword(b.password), 12));
   const { rows } = await query(...u.sql('users', id, USER_COLS));
   if (!rows[0]) throw new HttpError(404, 'Medewerker niet gevonden');
-  if (b.active === false || b.password) await query('DELETE FROM sessions WHERE user_id = $1', [id]);
+  const roleChanged = rows[0].role !== before.role;
+  // Bij een andere rol opnieuw laten inloggen, zodat rechten en 2FA-plicht direct gelden.
+  if (b.active === false || b.password || roleChanged) await query('DELETE FROM sessions WHERE user_id = $1', [id]);
+  const changes = [];
+  if (roleChanged) changes.push(`rol ${ROLE_NL[before.role]} → ${ROLE_NL[rows[0].role]}`);
+  if (rows[0].active !== before.active) changes.push(rows[0].active ? 'geactiveerd' : 'gedeactiveerd');
+  if (b.password) changes.push('wachtwoord gewijzigd');
+  if (rows[0].weekly_hours !== before.weekly_hours) changes.push(`contracturen ${fhNl(before.weekly_hours)} → ${fhNl(rows[0].weekly_hours)}`);
+  if (changes.length) await audit(null, req.user.id, 'user.update', `Gebruiker ${rows[0].name}: ${changes.join(', ')}`, { user_id: id });
   res.json(rows[0]);
 }));
 
@@ -85,6 +102,7 @@ r.post('/users/:id/mfa-reset', ah(async (req, res) => {
   );
   if (!rows[0]) throw new HttpError(404, 'Medewerker niet gevonden');
   await query('DELETE FROM sessions WHERE user_id = $1', [id]);
+  await audit(null, req.user.id, 'user.mfa_reset', `Tweestapsverificatie van ${rows[0].name} gereset`, { user_id: id });
   res.json(rows[0]);
 }));
 
@@ -212,11 +230,13 @@ r.post('/projects', ah(async (req, res) => {
      VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
     [clientId, name, code, reference, rate, budget, billable]
   );
+  await audit(null, req.user.id, 'project.create', `Project ${name} aangemaakt, tarief ${eurNl(rate)}${billable ? '' : ', niet declarabel'}`, { project_id: rows[0].id });
   res.status(201).json(rows[0]);
 }));
 
 r.patch('/projects/:id', ah(async (req, res) => {
   const id = intParam(req.params.id);
+  const before = (await query('SELECT * FROM projects WHERE id = $1', [id])).rows[0];
   const u = updater();
   projectFields(req.body, u);
   const { rows } = await query(...u.sql('projects', id, '*'));
@@ -225,6 +245,14 @@ r.patch('/projects/:id', ah(async (req, res) => {
     await query('UPDATE projects SET billable = FALSE WHERE id = $1', [id]);
     rows[0].billable = false;
   }
+  const after = rows[0];
+  const changes = [];
+  if (before.default_rate !== after.default_rate) changes.push(`tarief ${eurNl(before.default_rate)} → ${eurNl(after.default_rate)}`);
+  if (before.billable !== after.billable) changes.push(after.billable ? 'declarabel gemaakt' : 'niet declarabel gemaakt');
+  if (before.client_id !== after.client_id) changes.push('andere klant');
+  if ((before.reference || '') !== (after.reference || '')) changes.push(`PO ${before.reference || 'leeg'} → ${after.reference || 'leeg'}`);
+  if (before.budget_hours !== after.budget_hours) changes.push(`budget ${before.budget_hours ?? 'geen'} → ${after.budget_hours ?? 'geen'} uur`);
+  if (changes.length) await audit(null, req.user.id, 'project.update', `Project ${after.name}: ${changes.join(', ')}`, { project_id: id });
   res.json(rows[0]);
 }));
 
@@ -328,12 +356,16 @@ r.post('/activities', ah(async (req, res) => {
 
 r.patch('/activities/:id', ah(async (req, res) => {
   const f = activityFields(req.body);
+  const before = (await query('SELECT default_rate FROM activities WHERE id = $1', [intParam(req.params.id)])).rows[0];
   try {
     const { rows } = await query(
       `UPDATE activities SET name = $1, description = $2, default_rate = $3, active = $4 WHERE id = $5 RETURNING *`,
       [f.name, f.description, f.default_rate, req.body.active !== false, intParam(req.params.id)]
     );
     if (!rows[0]) throw new HttpError(404, 'Activiteit niet gevonden');
+    if (before && before.default_rate !== rows[0].default_rate) {
+      await audit(null, req.user.id, 'rate.activity', `Standaardtarief ${rows[0].name}: ${eurNl(before.default_rate)} → ${eurNl(rows[0].default_rate)}`, { activity_id: rows[0].id });
+    }
     res.json(rows[0]);
   } catch (err) {
     if (err.code === '23505') throw new HttpError(409, 'Er bestaat al een activiteit met deze naam');
@@ -369,6 +401,9 @@ r.post('/activities/import', ah(async (req, res) => {
     }
     return result;
   });
+  if (out.created || out.updated) {
+    await audit(null, req.user.id, 'activity.import', `Activiteiten geïmporteerd: ${out.created} nieuw, ${out.updated} tarieven bijgewerkt`, out);
+  }
   res.json(out);
 }));
 
@@ -410,12 +445,20 @@ r.put('/projects/:id/activities/:activityId', ah(async (req, res) => {
   const rate = num(req.body.rate, { min: 0, max: 10000, name: 'tarief', allowNull: true });
   const budgetHours = num(req.body.budget_hours, { min: 0, max: 1000000, name: 'budget in uren', allowNull: true });
   const budgetAmount = num(req.body.budget_amount, { min: 0, max: 100000000, name: 'budget in euro', allowNull: true });
+  const pid = intParam(req.params.id);
+  const aid = intParam(req.params.activityId);
+  const before = (await query('SELECT rate FROM project_activities WHERE project_id = $1 AND activity_id = $2', [pid, aid])).rows[0];
   await query(
     `INSERT INTO project_activities (project_id, activity_id, rate, budget_hours, budget_amount) VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (project_id, activity_id) DO UPDATE
         SET rate = EXCLUDED.rate, budget_hours = EXCLUDED.budget_hours, budget_amount = EXCLUDED.budget_amount`,
-    [intParam(req.params.id), intParam(req.params.activityId), rate, budgetHours, budgetAmount]
+    [pid, aid, rate, budgetHours, budgetAmount]
   );
+  if ((before ? before.rate : null) !== rate) {
+    await audit(null, req.user.id, 'rate.project_activity',
+      `Tarief ${await nameOf('activities', aid)} op ${await nameOf('projects', pid)}: ${before ? eurNl(before.rate) : 'niet gekoppeld'} → ${eurNl(rate)}`,
+      { project_id: pid, activity_id: aid });
+  }
   res.json({ ok: true });
 }));
 
@@ -483,6 +526,11 @@ r.post('/hours/import', ah(async (req, res) => {
       if (ins.rowCount) { out.inserted += 1; out.hours += hours; } else out.skipped += 1;
     }
     out.hours = Math.round(out.hours * 100) / 100;
+    if (out.inserted) {
+      await audit(db, req.user.id, 'hours.import',
+        `${regels(out.inserted)} uren geïmporteerd (${fhNl(out.hours)} uur)${invoicedThrough ? `, t/m ${invoicedThrough} als gefactureerd` : ''}`,
+        { ...out, invoiced_through: invoicedThrough });
+    }
     return out;
   });
   res.json(result);
@@ -493,7 +541,7 @@ r.get('/projects/:id/assignments', ah(async (req, res) => {
   const { rows } = await query(
     `SELECT u.id AS user_id, u.name, u.active, a.rate, (a.user_id IS NOT NULL) AS assigned
        FROM users u LEFT JOIN assignments a ON a.user_id = u.id AND a.project_id = $1
-      WHERE u.active OR a.user_id IS NOT NULL
+      WHERE (u.active AND u.role <> 'accountant') OR a.user_id IS NOT NULL
       ORDER BY u.name`,
     [id]
   );
@@ -504,6 +552,12 @@ r.put('/projects/:id/assignments/:userId', ah(async (req, res) => {
   const projectId = intParam(req.params.id);
   const userId = intParam(req.params.userId);
   const rate = num(req.body.rate, { min: 0, max: 10000, name: 'tarief', allowNull: true });
+  const before = (await query('SELECT rate FROM assignments WHERE project_id = $1 AND user_id = $2', [projectId, userId])).rows[0];
+  if (before && before.rate !== rate) {
+    await audit(null, req.user.id, 'rate.assignment',
+      `Tarief ${await nameOf('users', userId)} op ${await nameOf('projects', projectId)}: ${eurNl(before.rate)} → ${eurNl(rate)}`,
+      { project_id: projectId, user_id: userId });
+  }
   await query(
     `INSERT INTO assignments (project_id, user_id, rate) VALUES ($1, $2, $3)
      ON CONFLICT (project_id, user_id) DO UPDATE SET rate = EXCLUDED.rate`,
@@ -553,7 +607,13 @@ r.put('/settings', ah(async (req, res) => {
   if (value.numberPrefix && !/^[A-Za-z0-9-]*$/.test(value.numberPrefix)) {
     throw new HttpError(400, 'Het voorvoegsel mag alleen letters, cijfers en een streepje bevatten');
   }
+  const before = await getEbSettings();
   await setEbSettings(value);
+  const changed = Object.keys(value).filter((k) => JSON.stringify(value[k]) !== JSON.stringify(before[k]));
+  if (changed.length) {
+    await audit(null, req.user.id, 'settings.eb', `Factuurinstellingen gewijzigd: ${changed.join(', ')}`,
+      Object.fromEntries(changed.map((k) => [k, { van: before[k], naar: value[k] }])));
+  }
   res.json(value);
 }));
 

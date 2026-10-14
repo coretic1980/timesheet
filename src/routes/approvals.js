@@ -1,6 +1,17 @@
 const express = require('express');
 const { query } = require('../db');
 const { ah, HttpError, idList, str, isoDate, addDays, todayIso } = require('../util');
+const { audit, fhNl, regels } = require('../audit');
+
+// Samenvatting voor het logboek: aantal regels, uren en wiens uren.
+async function logChange(req, action, verb, rows, extra = {}) {
+  if (!rows.length) return;
+  const hours = rows.reduce((t, x) => t + Number(x.hours), 0);
+  const userIds = [...new Set(rows.map((x) => x.user_id))];
+  const names = (await query('SELECT name FROM users WHERE id = ANY($1) ORDER BY name', [userIds])).rows.map((x) => x.name);
+  await audit(null, req.user.id, action, `${regels(rows.length)} ${verb} (${fhNl(hours)} uur) van ${names.join(', ')}`,
+    { entry_ids: rows.map((x) => x.id), hours, ...extra });
+}
 
 const r = express.Router();
 
@@ -38,7 +49,7 @@ r.get('/', ah(async (req, res) => {
 // 4. projecttarief
 r.post('/approve', ah(async (req, res) => {
   const ids = idList(req.body.ids);
-  const { rowCount } = await query(
+  const { rows, rowCount } = await query(
     `UPDATE time_entries e
         SET status = 'approved', approved_by = $2, approved_at = now(), updated_at = now(),
             rate = COALESCE(
@@ -47,32 +58,38 @@ r.post('/approve', ah(async (req, res) => {
               (SELECT a.rate FROM assignments a WHERE a.project_id = e.project_id AND a.user_id = e.user_id),
               (SELECT ac.default_rate FROM activities ac WHERE ac.id = e.activity_id),
               (SELECT p.default_rate FROM projects p WHERE p.id = e.project_id))
-      WHERE e.id = ANY($1) AND e.status = 'submitted'`,
+      WHERE e.id = ANY($1) AND e.status = 'submitted'
+      RETURNING e.id, e.user_id, e.hours`,
     [ids, req.user.id]
   );
+  await logChange(req, 'hours.approve', 'goedgekeurd', rows);
   res.json({ approved: rowCount });
 }));
 
 r.post('/reject', ah(async (req, res) => {
   const ids = idList(req.body.ids);
   const reason = str(req.body.reason, { name: 'Reden', max: 500 });
-  const { rowCount } = await query(
+  const { rows, rowCount } = await query(
     `UPDATE time_entries SET status = 'rejected', rejection_reason = $2, updated_at = now()
-      WHERE id = ANY($1) AND status = 'submitted'`,
+      WHERE id = ANY($1) AND status = 'submitted'
+      RETURNING id, user_id, hours`,
     [ids, reason]
   );
+  await logChange(req, 'hours.reject', 'afgekeurd', rows, { reason });
   res.json({ rejected: rowCount });
 }));
 
 // Goedgekeurde (nog niet gefactureerde) uren terugzetten naar concept.
 r.post('/reopen', ah(async (req, res) => {
   const ids = idList(req.body.ids);
-  const { rowCount } = await query(
+  const { rows, rowCount } = await query(
     `UPDATE time_entries
         SET status = 'draft', approved_by = NULL, approved_at = NULL, rate = NULL, updated_at = now()
-      WHERE id = ANY($1) AND status IN ('approved', 'rejected') AND invoice_id IS NULL`,
+      WHERE id = ANY($1) AND status IN ('approved', 'rejected') AND invoice_id IS NULL
+      RETURNING id, user_id, hours`,
     [ids]
   );
+  await logChange(req, 'hours.reopen', 'teruggezet naar concept', rows);
   if (!rowCount) throw new HttpError(400, 'Geen regels heropend; gefactureerde uren kunnen niet terug');
   res.json({ reopened: rowCount });
 }));

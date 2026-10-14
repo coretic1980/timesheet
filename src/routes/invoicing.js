@@ -2,6 +2,7 @@ const express = require('express');
 const { query, tx, getEbSettings } = require('../db');
 const { ah, HttpError, isoDate, intParam, str, todayIso, fmtDateNl, round2 } = require('../util');
 const eb = require('../eboekhouden');
+const { audit, fhNl } = require('../audit');
 
 const r = express.Router();
 
@@ -302,14 +303,18 @@ r.post('/create', ah(async (req, res) => {
 
     const ins = await db.query(
       `INSERT INTO invoices (client_id, eb_invoice_id, eb_invoice_number, pdf_url, period_from, period_to,
-                             hours, total_excl, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [client.id, ebId || null, number || null, pdf || null, from, to, sum.hours, sum.total_excl, req.user.id]
+                             hours, total_excl, created_by, invoice_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [client.id, ebId || null, number || null, pdf || null, from, to, sum.hours, sum.total_excl, req.user.id, date]
     );
     await db.query(
       `UPDATE time_entries SET status = 'invoiced', invoice_id = $1, updated_at = now() WHERE id = ANY($2)`,
       [ins.rows[0].id, entries.map((e) => e.id)]
     );
+    await audit(db, req.user.id, 'invoice.create',
+      `Factuur ${number || `#${ebId || ins.rows[0].id}`} gemaakt voor ${client.name}: ${fhNl(sum.hours)} uur, € ${fhNl(sum.total_excl)} excl. btw`
+        + ` (${fmtDateNl(from)} t/m ${fmtDateNl(to)})${sendEmail ? ', gemaild' : ''}`,
+      { invoice_id: ins.rows[0].id, eb_invoice_id: ebId || null, number: number || null, client_id: client.id, date, reference: reference || null, entry_ids: entries.map((e) => e.id) });
     return { invoice: ins.rows[0], lines, emailed: sendEmail };
   });
 
@@ -342,6 +347,10 @@ r.post('/:id/revert', ah(async (req, res) => {
       [id]
     );
     await db.query('UPDATE invoices SET reverted_at = now(), reverted_by = $2 WHERE id = $1', [id, req.user.id]);
+    const cname = (await db.query('SELECT name FROM clients WHERE id = $1', [inv.client_id])).rows[0].name;
+    await audit(db, req.user.id, 'invoice.revert',
+      `Factuur ${inv.eb_invoice_number || `#${inv.eb_invoice_id || inv.id}`} van ${cname} teruggedraaid: ${fhNl(inv.hours)} uur, € ${fhNl(inv.total_excl)} weer te factureren`,
+      { invoice_id: inv.id, number: inv.eb_invoice_number, entry_count: upd.rowCount });
     return { reverted: upd.rowCount, hours: round2(upd.rows.reduce((t, x) => t + x.hours, 0)) };
   });
   res.json(result);
