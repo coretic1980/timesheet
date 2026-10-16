@@ -1,5 +1,6 @@
 const express = require('express');
 const { query } = require('../db');
+const { hoursAccess, assertHoursAllowed, allowedOn, gateMessage } = require('../onboarding');
 const {
   ah, HttpError, isoDate, addDays, todayIso, weekRange, num, str, intParam,
 } = require('../util');
@@ -101,6 +102,8 @@ r.get('/', ah(async (req, res) => {
     entries,
     recent,
     weekly_hours: req.user.weekly_hours,
+    // Ingehuurde zzp'ers: in welke periodes mag er geschreven worden (vrijgegeven inhuurdossiers).
+    onboarding: await hoursAccess(uid),
   });
 }));
 
@@ -134,6 +137,9 @@ r.put('/entry', ah(async (req, res) => {
     if (existing) await query('DELETE FROM time_entries WHERE id = $1', [existing.id]);
     return res.json({ deleted: true });
   }
+
+  // zzp'ers schrijven alleen uren binnen een vrijgegeven opdracht.
+  await assertHoursAllowed(uid, workDate);
 
   if (!existing) {
     const linked = (await query(
@@ -172,6 +178,20 @@ r.put('/entry', ah(async (req, res) => {
 
 r.post('/submit', ah(async (req, res) => {
   const { start, end, period } = periodRange(req.body);
+  const access = await hoursAccess(req.user.id);
+  if (access.required) {
+    const days = (await query(
+      `SELECT DISTINCT work_date FROM time_entries
+        WHERE user_id = $1 AND work_date BETWEEN $2 AND $3 AND status IN ('draft', 'rejected') ORDER BY work_date`,
+      [req.user.id, start, end]
+    )).rows.map((x) => x.work_date);
+    const bad = days.find((d) => !allowedOn(access, d));
+    if (bad) {
+      const err = new HttpError(403, `${gateMessage(access, bad)} Verwijder die uren voordat je indient.`);
+      err.code = 'ONBOARDING_REQUIRED';
+      throw err;
+    }
+  }
   const { rowCount } = await query(
     `UPDATE time_entries SET status = 'submitted', rejection_reason = NULL, updated_at = now()
       WHERE user_id = $1 AND work_date BETWEEN $2 AND $3 AND status IN ('draft', 'rejected')`,

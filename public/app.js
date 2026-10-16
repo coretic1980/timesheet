@@ -207,6 +207,7 @@
     alert: '<path d="M12 4 2.8 19.5h18.4z"/><path d="M12 10v4.2M12 17v.1"/>',
     info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8v.1"/>',
     shield: '<path d="M12 3.5 5 6.3v5.2c0 4.3 3 7.6 7 9 4-1.4 7-4.7 7-9V6.3z"/><path d="m9 12 2.2 2.2L15.5 10"/>',
+    people: '<circle cx="9" cy="8.5" r="3.3"/><path d="M3 19.5c.9-3.2 3.2-4.8 6-4.8s5.1 1.6 6 4.8"/><path d="M15.5 5.6a3.2 3.2 0 0 1 0 6M17.5 14.9c1.6.6 2.8 2.1 3.4 4.6"/>',
   };
   const icon = (name, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
   const isNarrow = () => window.matchMedia('(max-width: 760px)').matches;
@@ -219,6 +220,7 @@
     uren: { title: 'Uren', roles: ['admin', 'employee'], render: viewTimesheet },
     goedkeuren: { title: 'Goedkeuren', roles: ['admin'], render: viewApprovals },
     facturen: { title: 'Facturen', roles: ['admin'], render: viewInvoicing },
+    inhuur: { title: 'Inhuur', roles: ['admin', 'accountant'], render: (view, params) => window.CoreticInhuur.view(view, params, inhuurCtx()) },
     controle: { title: 'Controle', roles: ['admin', 'accountant'], render: viewControl },
     rapportage: { title: 'Rapportage', roles: ['admin', 'accountant'], render: viewReports },
     beheer: { title: 'Beheer', roles: ['admin'], render: viewAdmin },
@@ -248,7 +250,7 @@
     // Tabbalk onderaan op mobiel: de vier belangrijkste plekken, de rest onder "Meer".
     const tabs = {
       admin: [['overzicht', 'Overzicht', 'home'], ['uren', 'Uren', 'clock'], ['goedkeuren', 'Goedkeuren', 'check'], ['facturen', 'Facturen', 'invoice']],
-      accountant: [['controle', 'Controle', 'shield'], ['rapportage', 'Rapportage', 'chart'], ['account', 'Account', 'user']],
+      accountant: [['controle', 'Controle', 'shield'], ['rapportage', 'Rapportage', 'chart'], ['inhuur', 'Inhuur', 'people'], ['account', 'Account', 'user']],
       employee: state.user.is_contractor
         ? [['uren', 'Uren', 'clock'], ['mijnfacturen', 'Facturen', 'invoice'], ['account', 'Account', 'user']]
         : [['uren', 'Uren', 'clock'], ['account', 'Account', 'user']],
@@ -274,7 +276,7 @@
 
   // Bladmenu "Meer" op mobiel.
   function openMoreSheet() {
-    const items = [['controle', 'Controle', 'shield'], ['rapportage', 'Rapportage', 'chart'], ['beheer', 'Beheer', 'cog'], ['account', 'Account', 'user']];
+    const items = [['inhuur', "Inhuur zzp'ers", 'people'], ['controle', 'Controle', 'shield'], ['rapportage', 'Rapportage', 'chart'], ['beheer', 'Beheer', 'cog'], ['account', 'Account', 'user']];
     const sheet = document.createElement('div');
     sheet.className = 'sheet-backdrop';
     sheet.innerHTML = `
@@ -297,6 +299,9 @@
     document.addEventListener('keydown', function esc1(ev) { if (ev.key === 'Escape') { close(); document.removeEventListener('keydown', esc1); } });
     document.body.appendChild(sheet);
   }
+
+  // Hulpfuncties voor het Inhuur-scherm (public/inhuur.js).
+  const inhuurCtx = () => ({ api, esc, toast, openDialog, confirmDialog, render, labelTables, icon, user: state.user });
 
   async function refreshPending() {
     if (!state.user || state.user.role !== 'admin') return;
@@ -1627,18 +1632,37 @@
       </div>`;
   }
 
+  // Ingehuurde zzp'ers schrijven alleen uren binnen een vrijgegeven opdracht (Inhuur).
+  function onboardingNotice(data) {
+    const o = data.onboarding;
+    if (!o || !o.required) return '';
+    if (!o.periods.length) {
+      return o.finished
+        ? `<div class="notice warn" style="margin-bottom:1rem"><strong>Je opdracht is afgerond.</strong>
+          Je kunt geen uren meer schrijven. Voor nieuw werk maakt Coretic eerst een nieuwe opdracht met je af.</div>`
+        : `<div class="notice error" style="margin-bottom:1rem"><strong>Je kunt nog geen uren schrijven.</strong>
+          Je onboarding bij Coretic is nog niet afgerond. Zodra je dossier compleet is en is vrijgegeven, kun je hier uren schrijven.</div>`;
+    }
+    const inside = (d) => o.periods.some((p) => (!p.start || d >= p.start) && (!p.eind || d <= p.eind));
+    const outside = data.days.filter((d) => !inside(d));
+    if (!outside.length) return '';
+    const range = o.periods.map((p) => `${p.start ? fmtDate(p.start, true) : 'begin'} t/m ${p.eind ? fmtDate(p.eind, true) : 'einde'}`).join(', ');
+    return `<div class="notice warn" style="margin-bottom:1rem">Je kunt alleen uren schrijven binnen de looptijd van je opdracht: ${esc(range)}.
+      ${outside.length === data.days.length ? 'Deze periode valt daarbuiten.' : ''}</div>`;
+  }
+
   function refreshSheetChrome(view) {
     const data = state.sheet;
     view.querySelector('#sheet-head').innerHTML = weekNavHTML(data);
 
     const rejected = [...data.map.values()].filter((e) => e.status === 'rejected');
-    view.querySelector('#sheet-notices').innerHTML = rejected.length
+    view.querySelector('#sheet-notices').innerHTML = onboardingNotice(data) + (rejected.length
       ? `<div class="notice error" style="margin-bottom:1rem">
            <strong>${rejected.length === 1 ? 'Eén regel is' : `${rejected.length} regels zijn`} afgekeurd.</strong>
            ${[...new Set(rejected.map((e) => e.rejection_reason))].map((r) => esc(r)).join(' ')}
            Pas de uren aan en dien de week opnieuw in.
          </div>`
-      : '';
+      : '');
 
     for (const el of view.querySelectorAll('[data-budget]')) {
       const { pid, aid } = parseKey(el.dataset.budget);
@@ -1882,12 +1906,13 @@
     const prevMonth = monthBounds(-1);
     const curMonth = monthBounds(0);
     const yearStart = `${today.slice(0, 4)}-01-01`;
-    const [pending, candPrev, candCur, year, week] = await Promise.all([
+    const [pending, candPrev, candCur, year, week, inhuur] = await Promise.all([
       api('/approvals?status=submitted'),
       api(`/invoicing/candidates?from=${prevMonth.from}&to=${prevMonth.to}`),
       api(`/invoicing/candidates?from=${curMonth.from}&to=${curMonth.to}`),
       api(`/reports/summary?from=${yearStart}&to=${today}`),
       api(`/reports/summary?from=${lastWeek}&to=${addDays(lastWeek, 6)}`),
+      api('/onboarding').catch(() => null),
     ]);
 
     // Te beoordelen, per medewerker.
@@ -1934,6 +1959,11 @@
           ${tile('#/goedkeuren', 'Te beoordelen', pending.length ? `${fh(pendingHours)} uur` : 'Niets', pending.length ? `${pending.length} regels van ${byUser.size} ${byUser.size === 1 ? 'medewerker' : 'medewerkers'}` : 'Alles is beoordeeld', pending.length ? 'warn' : 'ok')}
           ${tile('#/facturen', `Te factureren ${monthName(prevMonth)}`, eur0(prevAmount), billPrev.length ? `${billPrev.length} ${billPrev.length === 1 ? 'klant' : 'klanten'}, goedgekeurd` : 'Niets meer open', prevAmount ? 'accent' : 'ok')}
           ${tile('#/rapportage', 'Budgetten bijna op', String(tight.length), tight.length ? 'Minder dan 25% over' : 'Alle budgetten ruim', tight.length ? 'low' : 'ok')}
+          ${inhuur ? (() => {
+            const urgent = inhuur.dossiers.reduce((n, d) => n + d.actions.filter((a) => a[0] === 'bad').length, 0) + (inhuur.enforce ? inhuur.unmanaged.length : 0);
+            const active = inhuur.dossiers.filter((d) => d.status === 'actief').length;
+            return tile('#/inhuur', "Inhuur zzp'ers", urgent ? `${urgent} ${urgent === 1 ? 'punt' : 'punten'}` : 'In orde', `${active} ${active === 1 ? 'opdracht' : 'opdrachten'} vrijgegeven`, urgent ? 'low' : 'ok');
+          })() : ''}
           ${tile('#/rapportage', 'Week ' + isoWeek(lastWeek) + ' niet ingediend', String(late.length), late.length ? late.map((u) => esc(u.name.split(' ')[0])).join(', ') : 'Iedereen is bij', late.length ? 'warn' : 'ok')}
         </div>
 
@@ -1998,7 +2028,7 @@
   };
   const CONTROL_TABS = { overzicht: 'Overzicht', uren: 'Uren', facturen: 'Facturen', logboek: 'Logboek' };
   const AUDIT_KINDS = {
-    '': 'Alles', hours: 'Goedkeuren en import', invoice: 'Facturen', rate: 'Tarieven', project: 'Projecten', user: 'Gebruikers', settings: 'Instellingen',
+    '': 'Alles', hours: 'Goedkeuren en import', invoice: 'Facturen', rate: 'Tarieven', project: 'Projecten', user: 'Gebruikers', settings: 'Instellingen', onboarding: "Inhuur zzp'ers",
   };
   const fmtMonthKey = (k) => { const [y, m] = k.split('-').map(Number); return `${MONTHS_LONG[m - 1]} ${y}`; };
   const fmtStamp = (iso) => new Intl.DateTimeFormat('nl-NL', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(iso));
