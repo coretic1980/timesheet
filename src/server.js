@@ -1,7 +1,7 @@
 const path = require('path');
 const express = require('express');
 const { migrate, seedAdmin, pool } = require('./db');
-const { loadUser, requireAdmin, requireRole, csrfGuard, cleanupSessions, enforceMfaSetup } = require('./auth');
+const { loadUser, requireAuth, requireAdmin, requireRole, csrfGuard, cleanupSessions, enforceMfaSetup } = require('./auth');
 const { query } = require('./db');
 const { HttpError } = require('./util');
 const { EbError } = require('./eboekhouden');
@@ -46,6 +46,8 @@ app.use('/api/approvals', requireAdmin, enforceMfaSetup, require('./routes/appro
 app.use('/api/admin', requireAdmin, enforceMfaSetup, require('./routes/admin'));
 app.use('/api/invoicing', requireAdmin, enforceMfaSetup, require('./routes/invoicing'));
 app.use('/api/reports', requireRole('admin', 'accountant'), enforceMfaSetup, require('./routes/reports'));
+// Zelffacturen voor ingehuurde zzp'ers; de rechten per actie staan in de router.
+app.use('/api/self-billing', requireAuth, enforceMfaSetup, require('./routes/selfbilling'));
 app.use('/api/accountant', requireRole('admin', 'accountant'), enforceMfaSetup, require('./routes/accountant'));
 app.use('/api', (req, res, next) => next(new HttpError(404, 'Onbekend endpoint')));
 

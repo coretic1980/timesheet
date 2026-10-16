@@ -1050,3 +1050,12 @@ table.control-entries td.desc { min-width: 14rem; max-width: 26rem; }
   .control-filter { grid-template-columns: 1fr 1fr; gap: 0.6rem; padding: 0.85rem; }
   .control-filter select { width: 100%; }
 }
+
+/* ---------- Zelffacturen zzp ---------- */
+.zzp-box { border-top: 1px solid var(--line-soft); padding-top: 0.9rem; display: grid; gap: 0.75rem; }
+ul.tight { margin: 0.35rem 0 0; padding-left: 1.1rem; }
+.bill-card { padding: 1rem 1.15rem; display: grid; gap: 0.75rem; }
+.bill-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+.bill-head h2 { margin-bottom: 0.15rem; }
+.bill-card .facts { grid-template-columns: repeat(4, max-content 1fr); }
+@media (max-width: 640px) { .bill-card .facts { grid-template-columns: max-content 1fr; } }

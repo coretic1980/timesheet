@@ -158,5 +158,7 @@ module.exports = {
   getRelation: (id) => request('GET', `/v1/relation/${id}`),
   createRelation: (body) => request('POST', '/v1/relation', { body }),
   createInvoice: (body) => request('POST', '/v1/invoice', { body }),
+  // Boeking (mutatie). type 1 = factuur ontvangen (inkoop), 2 = factuur verstuurd.
+  createMutation: (body) => request('POST', '/v1/mutation', { body }),
   getInvoice: (id) => request('GET', `/v1/invoice/${id}`),
 };

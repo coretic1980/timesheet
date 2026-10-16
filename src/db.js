@@ -94,4 +94,32 @@ async function setEbSettings(value) {
   );
 }
 
-module.exports = { pool, query, tx, migrate, seedAdmin, getEbSettings, setEbSettings };
+// Instellingen voor zelffacturering van ingehuurde zzp'ers (inkoop) en de gegevens van de afnemer (jouw bedrijf).
+const SELFBILL_DEFAULTS = {
+  prefix: `ZF${new Date().getFullYear()}-`,
+  digits: 4,
+  process: true,            // inkoopboeking maken in e-Boekhouden
+  costLedgerId: null,       // bijv. 7000 Inkoop / uitbesteed werk
+  creditorLedgerId: null,   // bijv. 1600 Crediteuren
+  companyName: '',
+  companyAddress: '',
+  companyPostalCode: '',
+  companyCity: '',
+  companyKvk: '',
+  companyVat: '',
+};
+
+async function getSelfBillSettings() {
+  const { rows } = await query(`SELECT value FROM settings WHERE key = 'selfbill'`);
+  return { ...SELFBILL_DEFAULTS, ...(rows[0] ? rows[0].value : {}) };
+}
+
+async function setSelfBillSettings(value) {
+  await query(
+    `INSERT INTO settings (key, value) VALUES ('selfbill', $1::jsonb)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    [JSON.stringify(value)]
+  );
+}
+
+module.exports = { pool, query, tx, migrate, seedAdmin, getEbSettings, setEbSettings, getSelfBillSettings, setSelfBillSettings };

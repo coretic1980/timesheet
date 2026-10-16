@@ -45,6 +45,8 @@ r.get('/summary', ah(async (req, res) => {
                                             AND e.status IN ('approved', 'invoiced')), 0) AS approved_hours,
             coalesce(sum(e.hours * e.rate) FILTER (WHERE e.work_date BETWEEN $1 AND $2
                                             AND e.status IN ('approved', 'invoiced')), 0) AS value,
+            coalesce(sum(e.hours * e.cost_rate) FILTER (WHERE e.work_date BETWEEN $1 AND $2
+                                            AND e.status IN ('approved', 'invoiced')), 0) AS cost,
             coalesce(sum(e.hours), 0) AS hours_all_time,
             (SELECT sum(pa.budget_hours) FROM project_activities pa WHERE pa.project_id = p.id) AS activity_budget_hours,
             (SELECT coalesce(sum(e2.hours), 0) FROM time_entries e2
@@ -57,7 +59,7 @@ r.get('/summary', ah(async (req, res) => {
      HAVING p.active OR coalesce(sum(e.hours) FILTER (WHERE e.work_date BETWEEN $1 AND $2), 0) > 0
       ORDER BY c.name NULLS LAST, p.name`,
     [from, to]
-  )).rows.map((p) => ({ ...p, value: round2(p.value) }));
+  )).rows.map((p) => ({ ...p, value: round2(p.value), cost: round2(p.cost) }));
 
   const byActivity = (await query(
     `SELECT p.id AS project_id, p.name AS project_name, p.active, c.name AS client_name,

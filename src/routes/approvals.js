@@ -57,7 +57,11 @@ r.post('/approve', ah(async (req, res) => {
                 WHERE pa.project_id = e.project_id AND pa.activity_id = e.activity_id),
               (SELECT a.rate FROM assignments a WHERE a.project_id = e.project_id AND a.user_id = e.user_id),
               (SELECT ac.default_rate FROM activities ac WHERE ac.id = e.activity_id),
-              (SELECT p.default_rate FROM projects p WHERE p.id = e.project_id))
+              (SELECT p.default_rate FROM projects p WHERE p.id = e.project_id)),
+            -- Ingehuurde zzp'er: inkooptarief van het project, anders zijn standaard inkooptarief.
+            cost_rate = (SELECT COALESCE(
+              (SELECT a.cost_rate FROM assignments a WHERE a.project_id = e.project_id AND a.user_id = e.user_id),
+              c.default_cost_rate) FROM contractors c WHERE c.user_id = e.user_id)
       WHERE e.id = ANY($1) AND e.status = 'submitted'
       RETURNING e.id, e.user_id, e.hours`,
     [ids, req.user.id]
@@ -84,13 +88,13 @@ r.post('/reopen', ah(async (req, res) => {
   const ids = idList(req.body.ids);
   const { rows, rowCount } = await query(
     `UPDATE time_entries
-        SET status = 'draft', approved_by = NULL, approved_at = NULL, rate = NULL, updated_at = now()
-      WHERE id = ANY($1) AND status IN ('approved', 'rejected') AND invoice_id IS NULL
+        SET status = 'draft', approved_by = NULL, approved_at = NULL, rate = NULL, cost_rate = NULL, updated_at = now()
+      WHERE id = ANY($1) AND status IN ('approved', 'rejected') AND invoice_id IS NULL AND self_bill_id IS NULL
       RETURNING id, user_id, hours`,
     [ids]
   );
   await logChange(req, 'hours.reopen', 'teruggezet naar concept', rows);
-  if (!rowCount) throw new HttpError(400, 'Geen regels heropend; gefactureerde uren kunnen niet terug');
+  if (!rowCount) throw new HttpError(400, 'Geen regels heropend; gefactureerde of al aan de zzp\'er afgerekende uren kunnen niet terug');
   res.json({ reopened: rowCount });
 }));
 

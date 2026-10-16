@@ -75,8 +75,16 @@ r.get('/overview', ah(async (req, res) => {
     [ohwDate]
   )).rows.map((x) => ({ ...x, approved_value: round2(x.approved_value), open_value: round2(x.open_value) }));
 
+  const purchases = (await query(
+    `SELECT count(*)::int AS count, coalesce(sum(hours), 0) AS hours, coalesce(sum(total_excl), 0) AS total_excl,
+            coalesce(sum(vat_amount), 0) AS vat_amount
+       FROM self_bills WHERE reverted_at IS NULL AND bill_date BETWEEN $1 AND $2`,
+    [from, to]
+  )).rows[0];
+
   res.json({
     from, to,
+    purchases: { ...purchases, total_excl: round2(purchases.total_excl), vat_amount: round2(purchases.vat_amount) },
     invoices: {
       count: byMonth.reduce((t, x) => t + x.count, 0), hours: sum(byMonth, 'hours'), total_excl: sum(byMonth, 'total_excl'), by_month: byMonth,
     },
@@ -229,6 +237,42 @@ async function checks(from, to) {
   add('imported_invoiced', 'info', 'Gefactureerd buiten de app', 'Alle gefactureerde uren in deze periode horen bij een factuur uit de app.',
     imported.n ? [{ label: `${imported.n} uurregels`, value: `${fh(imported.hours)} uur` }] : [],
     'Deze uren zijn bij de import uit e-Boekhouden als gefactureerd gemarkeerd; de facturen staan alleen in e-Boekhouden.');
+
+  // 11. Ingehuurde zzp'ers: goedgekeurde uren die na 45 dagen nog niet zijn afgerekend.
+  const zzpOld = (await query(
+    `SELECT u.name, sum(e.hours) AS hours, sum(e.hours * e.cost_rate) AS value, min(e.work_date) AS oldest
+       FROM time_entries e JOIN users u ON u.id = e.user_id JOIN contractors c ON c.user_id = e.user_id
+      WHERE e.status IN ('approved', 'invoiced') AND e.self_bill_id IS NULL AND e.work_date < $1 AND e.work_date <= $2
+      GROUP BY u.name ORDER BY u.name`,
+    [addDays(today, -45), to]
+  )).rows;
+  add('zzp_unbilled', 'warn', 'zzp\'ers tijdig afgerekend', 'Er staan geen goedgekeurde zzp-uren ouder dan 45 dagen open.',
+    zzpOld.map((x) => ({ label: x.name, value: `${fh(x.hours)} uur, ${eur(x.value)}, oudste ${x.oldest}` })),
+    'Goedgekeurde uren van ingehuurde zzp\'ers van meer dan 45 dagen geleden zijn nog niet met een zelffactuur afgerekend.');
+
+  // 12. Goedgekeurde zzp-uren zonder inkooptarief.
+  const zzpNoRate = (await query(
+    `SELECT u.name, sum(e.hours) AS hours
+       FROM time_entries e JOIN users u ON u.id = e.user_id JOIN contractors c ON c.user_id = e.user_id
+      WHERE e.status IN ('approved', 'invoiced') AND e.cost_rate IS NULL AND e.work_date BETWEEN $1 AND $2
+      GROUP BY u.name ORDER BY u.name`,
+    [from, to]
+  )).rows;
+  add('zzp_cost_rate', 'warn', 'Inkooptarief op zzp-uren', 'Alle goedgekeurde zzp-uren hebben een inkooptarief.',
+    zzpNoRate.map((x) => ({ label: x.name, value: `${fh(x.hours)} uur zonder inkooptarief` })),
+    'Deze goedgekeurde uren van ingehuurde zzp\'ers hebben geen inkooptarief.');
+
+  // 13. Zelffacturen met bezwaar of zonder akkoord na 14 dagen.
+  const sb = (await query(
+    `SELECT s.id, s.number, s.status, s.bill_date, s.total_excl, s.dispute_reason, s.snapshot->'supplier'->>'name' AS supplier
+       FROM self_bills s
+      WHERE s.reverted_at IS NULL AND (s.status = 'disputed' OR (s.status = 'open' AND s.bill_date < $1))
+      ORDER BY s.bill_date`,
+    [addDays(today, -14)]
+  )).rows;
+  add('selfbill_acceptance', 'warn', 'Zelffacturen geaccepteerd', 'Alle zelffacturen zijn geaccepteerd of nog geen 14 dagen oud.',
+    sb.map((x) => ({ label: `${x.number} ${x.supplier}`, value: x.status === 'disputed' ? `bezwaar: ${x.dispute_reason || ''}`.slice(0, 120) : `wacht sinds ${x.bill_date} op akkoord` })),
+    'Bij deze zelffacturen heeft de zzp\'er bezwaar gemaakt of na 14 dagen nog geen akkoord gegeven.');
 
   return out;
 }

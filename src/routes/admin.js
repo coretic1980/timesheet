@@ -1,6 +1,6 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const { query, tx, getEbSettings, setEbSettings } = require('../db');
+const { query, tx, getEbSettings, setEbSettings, getSelfBillSettings, setSelfBillSettings } = require('../db');
 const { ah, HttpError, str, num, intParam, isoDate, normName, poFromName } = require('../util');
 const eb = require('../eboekhouden');
 const { audit, fhNl, regels } = require('../audit');
@@ -12,7 +12,7 @@ const nameOf = async (table, id) => ((await query(`SELECT name FROM ${table} WHE
 
 const r = express.Router();
 
-const USER_COLS = 'id, email, name, role, weekly_hours, active, created_at, totp_enabled';
+const USER_COLS = 'id, email, name, role, weekly_hours, active, created_at, totp_enabled, EXISTS (SELECT 1 FROM contractors c WHERE c.user_id = users.id) AS is_contractor';
 
 function checkPassword(pw) {
   if (String(pw).length < 10) throw new HttpError(400, 'Wachtwoord moet minstens 10 tekens zijn');
@@ -104,6 +104,123 @@ r.post('/users/:id/mfa-reset', ah(async (req, res) => {
   await query('DELETE FROM sessions WHERE user_id = $1', [id]);
   await audit(null, req.user.id, 'user.mfa_reset', `Tweestapsverificatie van ${rows[0].name} gereset`, { user_id: id });
   res.json(rows[0]);
+}));
+
+/* ---------- Ingehuurde zzp'ers ---------- */
+
+const VAT_MODES = ['hoog', 'kor', 'verlegd'];
+const VAT_MODE_NL = { hoog: '21% btw', kor: 'kleineondernemersregeling (geen btw)', verlegd: 'btw verlegd' };
+
+r.get('/users/:id/contractor', ah(async (req, res) => {
+  const { rows } = await query('SELECT * FROM contractors WHERE user_id = $1', [intParam(req.params.id)]);
+  res.json(rows[0] || null);
+}));
+
+r.put('/users/:id/contractor', ah(async (req, res) => {
+  const id = intParam(req.params.id);
+  const b = req.body || {};
+  const u = (await query('SELECT id, name, role FROM users WHERE id = $1', [id])).rows[0];
+  if (!u) throw new HttpError(404, 'Medewerker niet gevonden');
+  if (u.role !== 'employee') throw new HttpError(400, 'Alleen een medewerker kan als zzp\'er worden ingehuurd');
+  const opt = (v, name, max) => str(v, { name, max, required: false }) || null;
+  const iban = opt(b.iban, 'IBAN', 40);
+  const f = {
+    company_name: str(b.company_name, { name: 'Bedrijfsnaam', max: 200 }),
+    address: opt(b.address, 'Adres', 200),
+    postal_code: opt(b.postal_code, 'Postcode', 20),
+    city: opt(b.city, 'Plaats', 100),
+    kvk: opt(b.kvk, 'KvK-nummer', 20),
+    vat_number: opt(b.vat_number, 'Btw-nummer', 30),
+    iban: iban ? iban.replace(/\s+/g, '').toUpperCase() : null,
+    vat_mode: VAT_MODES.includes(b.vat_mode) ? b.vat_mode : 'hoog',
+    default_cost_rate: num(b.default_cost_rate, { min: 0, max: 10000, name: 'inkooptarief', allowNull: true }),
+    agreement_date: b.agreement_date ? isoDate(b.agreement_date, 'datum akkoord') : null,
+    payment_term: num(b.payment_term ?? 30, { min: 0, max: 365, name: 'betaaltermijn' }),
+  };
+  if (f.iban && !/^[A-Z]{2}\d{2}[A-Z0-9]{8,30}$/.test(f.iban)) throw new HttpError(400, 'Ongeldig IBAN');
+  const before = (await query('SELECT * FROM contractors WHERE user_id = $1', [id])).rows[0];
+  const cols = Object.keys(f);
+  const { rows } = await query(
+    `INSERT INTO contractors (user_id, ${cols.join(', ')}) VALUES ($1, ${cols.map((_, i) => `$${i + 2}`).join(', ')})
+     ON CONFLICT (user_id) DO UPDATE SET ${cols.map((c) => `${c} = EXCLUDED.${c}`).join(', ')}, updated_at = now()
+     RETURNING *`,
+    [id, ...cols.map((c) => f[c])]
+  );
+  const changes = [];
+  if (!before) changes.push(`ingehuurd als zzp'er (${f.company_name})`);
+  else {
+    if (before.default_cost_rate !== f.default_cost_rate) changes.push(`inkooptarief ${eurNl(before.default_cost_rate)} → ${eurNl(f.default_cost_rate)}`);
+    if (before.vat_mode !== f.vat_mode) changes.push(`btw ${VAT_MODE_NL[before.vat_mode]} → ${VAT_MODE_NL[f.vat_mode]}`);
+    if ((before.iban || '') !== (f.iban || '')) changes.push('IBAN gewijzigd');
+    if ((before.agreement_date || '') !== (f.agreement_date || '')) changes.push(`akkoord zelffacturering ${f.agreement_date || 'leeg'}`);
+    if (before.company_name !== f.company_name || (before.vat_number || '') !== (f.vat_number || '')) changes.push('bedrijfsgegevens gewijzigd');
+  }
+  if (changes.length) await audit(null, req.user.id, 'contractor.update', `zzp'er ${u.name}: ${changes.join(', ')}`, { user_id: id });
+  res.json(rows[0]);
+}));
+
+r.delete('/users/:id/contractor', ah(async (req, res) => {
+  const id = intParam(req.params.id);
+  const used = (await query('SELECT 1 FROM self_bills WHERE user_id = $1 LIMIT 1', [id])).rows[0];
+  if (used) throw new HttpError(400, 'Er zijn al zelffacturen voor deze zzp\'er; de gegevens blijven daarom bewaard');
+  const { rowCount } = await query('DELETE FROM contractors WHERE user_id = $1', [id]);
+  if (rowCount) await audit(null, req.user.id, 'contractor.update', `${await nameOf('users', id)} is geen ingehuurde zzp'er meer`, { user_id: id });
+  res.json({ ok: true });
+}));
+
+// zzp'er koppelen aan (of aanmaken als) relatie in e-Boekhouden, als crediteur voor de inkoopboeking.
+r.post('/users/:id/contractor/link', ah(async (req, res) => {
+  const id = intParam(req.params.id);
+  const c = (await query('SELECT * FROM contractors WHERE user_id = $1', [id])).rows[0];
+  if (!c) throw new HttpError(400, 'Sla eerst de zzp-gegevens op');
+  const code = str(req.body.code, { name: 'Relatiecode', max: 15 });
+  let relation = await eb.findRelationByCode(code);
+  if (!relation && req.body.create) {
+    const body = { type: 'B', code, name: c.company_name };
+    if (c.address) body.address = c.address;
+    if (c.postal_code) body.postalCode = c.postal_code;
+    if (c.city) body.city = c.city;
+    if (c.vat_number) body.vatNumber = c.vat_number;
+    if (c.iban) body.iban = c.iban;
+    const created = await eb.createRelation(body);
+    relation = { id: created && (created.id || created.relationId), code };
+    if (!relation.id) throw new HttpError(502, 'e-Boekhouden gaf geen relatie-id terug');
+  }
+  if (!relation) throw new HttpError(404, `Relatie met code "${code}" niet gevonden in e-Boekhouden`);
+  const { rows } = await query(
+    'UPDATE contractors SET eb_relation_id = $1, eb_relation_code = $2 WHERE user_id = $3 RETURNING *',
+    [relation.id, relation.code || code, id]
+  );
+  res.json(rows[0]);
+}));
+
+r.get('/selfbill-settings', ah(async (req, res) => {
+  res.json(await getSelfBillSettings());
+}));
+
+r.put('/selfbill-settings', ah(async (req, res) => {
+  const b = req.body || {};
+  const optInt = (v, name) => (v === '' || v === null || v === undefined ? null : intParam(v, name));
+  const opt = (v, name, max) => str(v, { name, max, required: false });
+  const value = {
+    prefix: opt(b.prefix, 'Voorvoegsel', 20),
+    digits: num(b.digits ?? 4, { min: 1, max: 10, name: 'aantal cijfers' }),
+    process: b.process !== false,
+    costLedgerId: optInt(b.costLedgerId, 'kostenrekening'),
+    creditorLedgerId: optInt(b.creditorLedgerId, 'crediteurenrekening'),
+    companyName: opt(b.companyName, 'Bedrijfsnaam', 200),
+    companyAddress: opt(b.companyAddress, 'Adres', 200),
+    companyPostalCode: opt(b.companyPostalCode, 'Postcode', 20),
+    companyCity: opt(b.companyCity, 'Plaats', 100),
+    companyKvk: opt(b.companyKvk, 'KvK-nummer', 20),
+    companyVat: opt(b.companyVat, 'Btw-nummer', 30),
+  };
+  if (value.prefix && !/^[A-Za-z0-9-]*$/.test(value.prefix)) throw new HttpError(400, 'Het voorvoegsel mag alleen letters, cijfers en een streepje bevatten');
+  const before = await getSelfBillSettings();
+  await setSelfBillSettings(value);
+  const changed = Object.keys(value).filter((k) => JSON.stringify(value[k]) !== JSON.stringify(before[k]));
+  if (changed.length) await audit(null, req.user.id, 'settings.selfbill', `Instellingen zelffacturering gewijzigd: ${changed.join(', ')}`, null);
+  res.json(value);
 }));
 
 /* ---------- Klanten ---------- */
@@ -539,8 +656,10 @@ r.post('/hours/import', ah(async (req, res) => {
 r.get('/projects/:id/assignments', ah(async (req, res) => {
   const id = intParam(req.params.id);
   const { rows } = await query(
-    `SELECT u.id AS user_id, u.name, u.active, a.rate, (a.user_id IS NOT NULL) AS assigned
+    `SELECT u.id AS user_id, u.name, u.active, a.rate, a.cost_rate, (a.user_id IS NOT NULL) AS assigned,
+            (c.user_id IS NOT NULL) AS is_contractor, c.default_cost_rate
        FROM users u LEFT JOIN assignments a ON a.user_id = u.id AND a.project_id = $1
+       LEFT JOIN contractors c ON c.user_id = u.id
       WHERE (u.active AND u.role <> 'accountant') OR a.user_id IS NOT NULL
       ORDER BY u.name`,
     [id]
@@ -552,16 +671,22 @@ r.put('/projects/:id/assignments/:userId', ah(async (req, res) => {
   const projectId = intParam(req.params.id);
   const userId = intParam(req.params.userId);
   const rate = num(req.body.rate, { min: 0, max: 10000, name: 'tarief', allowNull: true });
-  const before = (await query('SELECT rate FROM assignments WHERE project_id = $1 AND user_id = $2', [projectId, userId])).rows[0];
+  const costRate = num(req.body.cost_rate, { min: 0, max: 10000, name: 'inkooptarief', allowNull: true });
+  const before = (await query('SELECT rate, cost_rate FROM assignments WHERE project_id = $1 AND user_id = $2', [projectId, userId])).rows[0];
   if (before && before.rate !== rate) {
     await audit(null, req.user.id, 'rate.assignment',
       `Tarief ${await nameOf('users', userId)} op ${await nameOf('projects', projectId)}: ${eurNl(before.rate)} → ${eurNl(rate)}`,
       { project_id: projectId, user_id: userId });
   }
+  if ((before ? before.cost_rate : null) !== costRate && (before || costRate !== null)) {
+    await audit(null, req.user.id, 'rate.cost',
+      `Inkooptarief ${await nameOf('users', userId)} op ${await nameOf('projects', projectId)}: ${before ? eurNl(before.cost_rate) : 'leeg'} → ${eurNl(costRate)}`,
+      { project_id: projectId, user_id: userId });
+  }
   await query(
-    `INSERT INTO assignments (project_id, user_id, rate) VALUES ($1, $2, $3)
-     ON CONFLICT (project_id, user_id) DO UPDATE SET rate = EXCLUDED.rate`,
-    [projectId, userId, rate]
+    `INSERT INTO assignments (project_id, user_id, rate, cost_rate) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (project_id, user_id) DO UPDATE SET rate = EXCLUDED.rate, cost_rate = EXCLUDED.cost_rate`,
+    [projectId, userId, rate, costRate]
   );
   res.json({ ok: true });
 }));

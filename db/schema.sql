@@ -151,3 +151,55 @@ CREATE TABLE IF NOT EXISTS audit_log (
   details  JSONB
 );
 CREATE INDEX IF NOT EXISTS audit_log_at_idx ON audit_log(at);
+
+-- Ingehuurde zzp'ers: leveranciersgegevens voor zelffacturering (factuur uitgereikt door afnemer).
+CREATE TABLE IF NOT EXISTS contractors (
+  user_id          INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  company_name     TEXT NOT NULL,
+  address          TEXT,
+  postal_code      TEXT,
+  city             TEXT,
+  kvk              TEXT,
+  vat_number       TEXT,
+  iban             TEXT,
+  vat_mode         TEXT NOT NULL DEFAULT 'hoog' CHECK (vat_mode IN ('hoog', 'kor', 'verlegd')),
+  default_cost_rate NUMERIC(10,2),             -- inkooptarief per uur excl. btw
+  agreement_date   DATE,                       -- datum akkoord zelffacturering
+  payment_term     INT NOT NULL DEFAULT 30,
+  eb_relation_id   INT,                        -- crediteur in e-Boekhouden
+  eb_relation_code TEXT,
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Inkooptarief per project (leeg = standaard inkooptarief van de zzp'er)
+ALTER TABLE assignments ADD COLUMN IF NOT EXISTS cost_rate NUMERIC(10,2);
+
+CREATE TABLE IF NOT EXISTS self_bills (
+  id             SERIAL PRIMARY KEY,
+  user_id        INT NOT NULL REFERENCES users(id),
+  number         TEXT NOT NULL UNIQUE,
+  bill_date      DATE NOT NULL,
+  period_from    DATE NOT NULL,
+  period_to      DATE NOT NULL,
+  hours          NUMERIC(10,2) NOT NULL,
+  total_excl     NUMERIC(12,2) NOT NULL,
+  vat_mode       TEXT NOT NULL,
+  vat_rate       NUMERIC(5,2) NOT NULL,
+  vat_amount     NUMERIC(12,2) NOT NULL,
+  total_incl     NUMERIC(12,2) NOT NULL,
+  snapshot       JSONB NOT NULL,              -- leverancier, afnemer en regels zoals uitgereikt
+  eb_mutation_id INT,
+  status         TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'accepted', 'disputed')),
+  status_at      TIMESTAMPTZ,
+  dispute_reason TEXT,
+  created_by     INT REFERENCES users(id),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  reverted_at    TIMESTAMPTZ,
+  reverted_by    INT REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS self_bills_user_idx ON self_bills(user_id);
+
+-- Inkooptarief vastgelegd bij goedkeuring, en op welke zelffactuur de uren staan
+ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS cost_rate NUMERIC(10,2);
+ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS self_bill_id INT REFERENCES self_bills(id);
+CREATE INDEX IF NOT EXISTS time_entries_self_bill_idx ON time_entries(self_bill_id);

@@ -15,7 +15,12 @@ const DUMMY_HASH = bcrypt.hashSync('niet-bestaand-account', 12);
 const MAX_MFA_ATTEMPTS = 5;
 
 async function publicUser(id) {
-  const { rows } = await query('SELECT id, email, name, role, weekly_hours, totp_enabled FROM users WHERE id = $1', [id]);
+  const { rows } = await query(
+    `SELECT id, email, name, role, weekly_hours, totp_enabled,
+            EXISTS (SELECT 1 FROM contractors c WHERE c.user_id = users.id) AS is_contractor
+       FROM users WHERE id = $1`,
+    [id]
+  );
   const u = rows[0];
   u.mfa_setup_required = mfaRequired(u) && !u.totp_enabled;
   u.mfa_required_for_role = mfaRequired(u);

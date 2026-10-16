@@ -102,6 +102,18 @@ De accountant:
 
 Elk tabblad heeft een CSV-knop voor Excel. Jij ziet als beheerder hetzelfde scherm onder **Controle**.
 
+## Ingehuurde zzp'ers: zelffacturering
+
+Laat je een zzp'er uren schrijven, dan maakt de app na goedkeuring de factuur namens de zzp'er ("factuur uitgereikt door afnemer"). Jij betaalt de zzp'er op basis van die factuur.
+
+1. **Afspraak vastleggen.** Zelffacturering mag alleen als je dat vooraf schriftelijk met de zzp'er hebt afgesproken. Leg de datum van die afspraak vast in de app.
+2. **zzp'er instellen.** Ga naar Beheer › Medewerkers, open de medewerker en vink **Ingehuurde zzp'er** aan. Vul de bedrijfsnaam, het adres, KvK, btw-nummer, IBAN, de btw (21%, kleineondernemersregeling of verlegd), het inkooptarief, de datum van het akkoord en eventueel de crediteur in e-Boekhouden in. Een afwijkend inkooptarief per project stel je in via Projecten › Team.
+3. **Eigen gegevens.** Onder Beheer › Koppeling › **Zelffacturering zzp** vul je de gegevens van je eigen bedrijf in (afnemer). Daar kies je ook de nummerreeks (bijvoorbeeld ZF2026-0001) en de kosten- en crediteurenrekening.
+4. **Afrekenen.** De zzp'er schrijft uren en jij keurt ze goed; het inkooptarief wordt dan vastgelegd. Onder Facturen › **Zelffacturen zzp** kies je de zzp'er, controleer je de regels en maak je de factuur. Is alles ingesteld, dan boekt de app hem als inkoopfactuur in e-Boekhouden (mutatie "factuur ontvangen" op de crediteur, btw-code HOOG_INK_21, GEEN of VERL_INK).
+5. **Akkoord.** De zzp'er ziet de factuur in de app onder **Facturen**, kan hem bekijken en afdrukken als pdf, en geeft akkoord of maakt bezwaar. Bij bezwaar trek je de factuur in, pas je aan en maak je een nieuwe. Een factuur die in e-Boekhouden is geboekt, crediteer je daar zelf.
+
+Op de factuur staan de verplichte gegevens van beide partijen, de vermelding "factuur uitgereikt door afnemer", de afspraak, de regels met uren en tarief, de btw en een urenspecificatie per dag. Rapportage toont per project de kosten van zzp'ers en de marge. De accountant ziet de zelffacturen onder Controle › Facturen, met signaleringen voor zzp-uren die na 45 dagen nog niet zijn afgerekend, uren zonder inkooptarief en facturen met bezwaar of zonder akkoord.
+
 ## Installatie
 
 ### 1. Database (Neon)

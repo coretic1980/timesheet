@@ -54,7 +54,8 @@ async function loadUser(req, res, next) {
     const token = parseCookies(req.headers.cookie)[COOKIE];
     if (token) {
       const { rows } = await query(
-        `SELECT u.id, u.email, u.name, u.role, u.weekly_hours, u.totp_enabled, s.pending_mfa, s.mfa_attempts, s.token AS session_hash
+        `SELECT u.id, u.email, u.name, u.role, u.weekly_hours, u.totp_enabled, s.pending_mfa, s.mfa_attempts, s.token AS session_hash,
+                EXISTS (SELECT 1 FROM contractors c WHERE c.user_id = u.id) AS is_contractor
            FROM sessions s JOIN users u ON u.id = s.user_id
           WHERE s.token = $1 AND s.expires_at > now() AND u.active`,
         [hashToken(token)]

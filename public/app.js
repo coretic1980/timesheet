@@ -220,10 +220,12 @@
     controle: { title: 'Controle', roles: ['admin', 'accountant'], render: viewControl },
     rapportage: { title: 'Rapportage', roles: ['admin', 'accountant'], render: viewReports },
     beheer: { title: 'Beheer', roles: ['admin'], render: viewAdmin },
+    mijnfacturen: { title: 'Facturen', roles: ['employee'], contractor: true, render: viewMyBills },
     account: { title: 'Account', hidden: true, render: viewAccount },
   };
   const HOME = { admin: 'overzicht', accountant: 'controle', employee: 'uren' };
-  const canSee = (route) => !route.roles || (state.user && route.roles.includes(state.user.role));
+  const canSee = (route) => (!route.roles || (state.user && route.roles.includes(state.user.role)))
+    && (!route.contractor || (state.user && state.user.is_contractor));
   const ROLE_LABEL = { admin: 'Beheerder', employee: 'Medewerker', accountant: 'Accountant' };
 
   function currentRoute() {
@@ -245,7 +247,9 @@
     const tabs = {
       admin: [['overzicht', 'Overzicht', 'home'], ['uren', 'Uren', 'clock'], ['goedkeuren', 'Goedkeuren', 'check'], ['facturen', 'Facturen', 'invoice']],
       accountant: [['controle', 'Controle', 'shield'], ['rapportage', 'Rapportage', 'chart'], ['account', 'Account', 'user']],
-      employee: [['uren', 'Uren', 'clock'], ['account', 'Account', 'user']],
+      employee: state.user.is_contractor
+        ? [['uren', 'Uren', 'clock'], ['mijnfacturen', 'Facturen', 'invoice'], ['account', 'Account', 'user']]
+        : [['uren', 'Uren', 'clock'], ['account', 'Account', 'user']],
     }[state.user.role] || [['account', 'Account', 'user']];
     const moreActive = !tabs.some(([k]) => k === active);
     const tabbar = `
@@ -2060,6 +2064,7 @@
           ${tile(`Onderhanden werk ${fmtDate(o.ohw.date, true)}`, eur0(ohwTotal), `${fh(o.ohw.approved_hours + o.ohw.open_hours)} uur nog niet gefactureerd`, '', null)}
           ${tile('Geschreven uren', fh(o.hours.total), `waarvan ${fh(billable)} declarabel`, '', '#/controle/uren')}
           ${tile('Signaleringen', String(warns.length), warns.length ? 'Om na te lopen' : 'Geen bijzonderheden', warns.length ? 'warn' : 'ok', null)}
+          ${o.purchases && o.purchases.count ? tile('Ingekocht bij zzp\'ers', eur0(o.purchases.total_excl), `${o.purchases.count} ${o.purchases.count === 1 ? 'zelffactuur' : 'zelffacturen'}, ${eur0(o.purchases.vat_amount)} btw`, '', '#/controle/facturen') : ''}
         </div>
 
         <section class="panel">
@@ -2186,7 +2191,10 @@
       : i.entry_count ? '<span class="badge submitted">Wijkt af</span>' : '<span class="badge submitted">Geen uren</span>');
 
   async function controlInvoices(box, from, to) {
-    const list = await api(`/accountant/invoices?${qs({ from, to })}`);
+    const [list, bills] = await Promise.all([
+      api(`/accountant/invoices?${qs({ from, to })}`),
+      api(`/self-billing/history?${qs({ from, to })}`).catch(() => []),
+    ]);
     state.controlInvoices = list;
     const active = list.filter((i) => !i.reverted_at);
     const total = active.reduce((s, i) => s + i.total_excl, 0);
@@ -2213,6 +2221,22 @@
           </table></div>` : '<div class="empty"><h2>Geen facturen</h2><p>In deze periode zijn geen facturen vanuit de app gemaakt.</p></div>'}
         </section>
         <p class="muted small">Alleen facturen die vanuit deze app zijn gemaakt. Facturen die rechtstreeks in e-Boekhouden zijn gemaakt, staan in e-Boekhouden.</p>
+        ${bills.length ? `
+        <div class="row spread"><h2>Zelffacturen zzp (inkoop)</h2><a class="btn" href="/api/self-billing/history.csv?${qs({ from, to })}" download>CSV downloaden</a></div>
+        <section class="panel">
+          <div class="table-wrap"><table class="data">
+            <thead><tr><th>Nummer</th><th>Factuurdatum</th><th>Leverancier</th><th>Periode</th><th class="num">Uren</th><th class="num">Excl. btw</th><th class="num">Btw</th><th>Status</th></tr></thead>
+            <tbody>${bills.map((x) => `<tr${x.reverted_at ? ' class="muted"' : ''}>
+              <td><a href="/api/self-billing/${x.id}/document" target="_blank" rel="noopener"><strong>${esc(x.number)}</strong></a>${x.eb_mutation_id ? '<span class="muted small block">geboekt</span>' : ''}</td>
+              <td class="nowrap">${fmtDate(x.bill_date, true)}</td>
+              <td>${esc(x.company_name)}<span class="muted small block">${esc(x.user_name)}</span></td>
+              <td class="nowrap">${fmtRange(x.period_from, x.period_to)}</td>
+              <td class="num">${fh(x.hours)}</td><td class="num">${eur(x.total_excl)}</td><td class="num">${eur(x.vat_amount)}</td>
+              <td>${x.reverted_at ? '<span class="badge">Ingetrokken</span>' : { open: '<span class="badge submitted">Wacht op akkoord</span>', accepted: '<span class="badge approved">Akkoord</span>', disputed: '<span class="badge rejected">Bezwaar</span>' }[x.status]}</td>
+            </tr>`).join('')}</tbody>
+          </table></div>
+        </section>
+        <p class="muted small">Facturen die Coretic namens ingehuurde zzp'ers heeft uitgereikt (zelffacturering), op factuurdatum.</p>` : ''}
       </div>`;
     box.querySelectorAll('[data-invoice]').forEach((b) => b.addEventListener('click', () => openControlInvoice(Number(b.dataset.invoice), from, to)));
   }
@@ -2375,6 +2399,7 @@
   /* ================= Facturen ================= */
 
   async function viewInvoicing(view, params = []) {
+    if (params[0] === 'zzp') return viewSelfBilling(view);
     const tab = params[0] === 'historie' ? 'historie' : 'open';
     state.invoicePeriod = state.invoicePeriod || monthBounds(-1);
     const { from, to } = state.invoicePeriod;
@@ -2418,10 +2443,7 @@
     view.innerHTML = `
       <div class="stack">
         <div class="row spread"><h1>Facturen</h1></div>
-        <div class="tabs" role="tablist">
-          <button role="tab" aria-selected="${tab === 'open'}" data-href="#/facturen">Te factureren</button>
-          <button role="tab" aria-selected="${tab === 'historie'}" data-href="#/facturen/historie">Gemaakte facturen <span class="muted">${active}</span></button>
-        </div>
+        ${invoiceTabs(tab, active)}
         ${tab === 'open' ? `
         <form class="period-bar" id="period">
           <div class="seg" role="group" aria-label="Periode">
@@ -2656,6 +2678,217 @@
     }
   }
 
+  /* ================= Zelffacturen zzp (beheerder) ================= */
+
+  const SB_STATUS = {
+    open: '<span class="badge submitted">Wacht op akkoord</span>',
+    accepted: '<span class="badge approved">Akkoord</span>',
+    disputed: '<span class="badge rejected">Bezwaar</span>',
+  };
+  const sbStatus = (s) => (s.reverted_at ? '<span class="badge">Ingetrokken</span>' : SB_STATUS[s.status] || '');
+  const sbDocUrl = (id) => `/api/self-billing/${id}/document`;
+  const invoiceTabs = (tab, active) => `
+    <div class="tabs" role="tablist">
+      <button role="tab" aria-selected="${tab === 'open'}" data-href="#/facturen">Te factureren</button>
+      <button role="tab" aria-selected="${tab === 'historie'}" data-href="#/facturen/historie">Gemaakte facturen${active === null ? '' : ` <span class="muted">${active}</span>`}</button>
+      <button role="tab" aria-selected="${tab === 'zzp'}" data-href="#/facturen/zzp">Zelffacturen zzp</button>
+    </div>`;
+
+  async function viewSelfBilling(view) {
+    state.invoicePeriod = state.invoicePeriod || monthBounds(-1);
+    const { from, to } = state.invoicePeriod;
+    const [cands, history] = await Promise.all([
+      api(`/self-billing/candidates?from=${from}&to=${to}`),
+      api('/self-billing/history'),
+    ]);
+    const m1 = monthBounds(-1); const m0 = monthBounds(0);
+    const label = from === m1.from && to === m1.to ? 'vorige maand' : from === m0.from && to === m0.to ? 'deze maand' : fmtRange(from, to);
+    const open = cands.filter((c) => c.hours > 0);
+    view.innerHTML = `
+      <div class="stack">
+        <div class="row spread"><h1>Facturen</h1></div>
+        ${invoiceTabs('zzp', null)}
+        ${cands.length ? '' : `<div class="notice">Nog geen ingehuurde zzp'ers. Zet bij <a href="#/beheer/medewerkers">Beheer › Medewerkers</a> een medewerker op "Ingehuurde zzp'er" en vul zijn bedrijfsgegevens en inkooptarief in.</div>`}
+        <form class="period-bar" id="sbperiod">
+          <div class="seg" role="group" aria-label="Periode">
+            <button type="button" data-month="-1" aria-pressed="${label === 'vorige maand'}">Vorige maand</button>
+            <button type="button" data-month="0" aria-pressed="${label === 'deze maand'}">Deze maand</button>
+          </div>
+          <details class="period-custom"${label.includes('–') ? ' open' : ''}><summary class="btn ghost small">Andere periode</summary>
+            <div class="row">
+              <label class="field">Van<input type="date" name="from" value="${from}" required></label>
+              <label class="field">Tot en met<input type="date" name="to" value="${to}" required></label>
+              <button class="btn primary" type="submit" style="align-self:end">Toon</button>
+            </div>
+          </details>
+        </form>
+        <section class="panel">
+          <div class="panel-pad">
+            <h2>Af te rekenen met zzp'ers</h2>
+            <p class="muted small">Goedgekeurde uren van ingehuurde zzp'ers in ${label}, tegen hun inkooptarief. Jij maakt de factuur namens de zzp'er; die ziet hem in de app en geeft akkoord.</p>
+          </div>
+          ${open.length ? `<ul class="client-pick">${open.map((c) => `
+            <li>
+              <button type="button" class="client-row" data-sb-preview="${c.user_id}">
+                <span class="cr-name">${esc(c.name)}<span class="muted small">${esc(c.company_name)}${c.agreement_date ? '' : ' · akkoord zelffacturering ontbreekt'}</span></span>
+                <span class="cr-hours">${fh(c.hours)} uur${c.missing_rate ? `<span class="badge rejected">${c.missing_rate} zonder tarief</span>` : ''}${c.open_hours ? `<span class="badge submitted">+${fh(c.open_hours)} open</span>` : ''}</span>
+                <strong class="cr-amount">${eur(c.amount)}</strong>
+                ${icon('chevron', 'chev')}
+              </button>
+            </li>`).join('')}</ul>`
+          : `<div class="empty small"><p>${cands.length ? `Niets af te rekenen in ${label}.` : 'Nog geen zzp\'ers.'}${cands.some((c) => c.open_hours) ? ' Er staan nog uren die niet zijn goedgekeurd.' : ''}</p></div>`}
+        </section>
+        <section class="panel">
+          <div class="panel-pad"><h2>Gemaakte zelffacturen</h2></div>
+          ${history.length ? `<div class="table-wrap"><table class="data">
+            <thead><tr><th>Nummer</th><th>zzp'er</th><th>Periode</th><th class="num">Uren</th><th class="num">Incl. btw</th><th>Status</th><th></th></tr></thead>
+            <tbody>${history.map((x) => `
+              <tr${x.reverted_at ? ' class="muted"' : ''}>
+                <td><a href="${sbDocUrl(x.id)}" target="_blank" rel="noopener"><strong>${esc(x.number)}</strong></a><span class="muted small block">${fmtDate(x.bill_date, true)}${x.eb_mutation_id ? ' · geboekt' : ''}</span></td>
+                <td>${esc(x.user_name)}<span class="muted small block">${esc(x.company_name)}</span></td>
+                <td class="nowrap">${fmtRange(x.period_from, x.period_to)}</td>
+                <td class="num">${fh(x.hours)}</td>
+                <td class="num">${eur(x.total_incl)}</td>
+                <td>${sbStatus(x)}${x.status === 'disputed' && !x.reverted_at && x.dispute_reason ? `<span class="small block le-reject">${esc(x.dispute_reason)}</span>` : ''}</td>
+                <td class="right">${x.reverted_at ? '' : `<button class="btn small" type="button" data-sb-revert="${x.id}">Intrekken</button>`}</td>
+              </tr>`).join('')}</tbody></table></div>`
+          : '<div class="empty small"><p>Nog geen zelffacturen gemaakt.</p></div>'}
+        </section>
+      </div>`;
+    view.querySelectorAll('[data-href]').forEach((b) => b.addEventListener('click', () => { location.hash = b.dataset.href; }));
+    view.querySelectorAll('[data-month]').forEach((b) => b.addEventListener('click', () => { state.invoicePeriod = monthBounds(Number(b.dataset.month)); render(); }));
+    const pf = view.querySelector('#sbperiod');
+    pf.addEventListener('submit', (e) => { e.preventDefault(); state.invoicePeriod = { from: pf.from.value, to: pf.to.value }; render(); });
+    view.querySelectorAll('[data-sb-preview]').forEach((b) => b.addEventListener('click', () => showSelfBillPreview(Number(b.dataset.sbPreview))));
+    view.querySelectorAll('[data-sb-revert]').forEach((b) => b.addEventListener('click', () => {
+      const x = history.find((y) => y.id === Number(b.dataset.sbRevert));
+      openDialog({
+        title: `Zelffactuur ${x.number} intrekken`,
+        submit: 'Intrekken',
+        danger: true,
+        body: `<p>De ${fh(x.hours)} uur van ${esc(x.user_name)} komen weer vrij om opnieuw af te rekenen. Het nummer ${esc(x.number)} blijft bestaan en het document krijgt het stempel "Ingetrokken".</p>
+          ${x.eb_mutation_id ? '<div class="notice warn">Deze factuur is in e-Boekhouden geboekt. Boek daar zelf een creditfactuur, de app kan boekingen niet terugdraaien.</div>' : ''}
+          <p class="muted small">Laat de zzp'er weten waarom, en maak daarna een nieuwe zelffactuur.</p>`,
+        onSubmit: async () => {
+          await api(`/self-billing/${x.id}/revert`, { method: 'POST' });
+          toast(`Zelffactuur ${x.number} ingetrokken`);
+          render();
+        },
+      });
+    }));
+  }
+
+  async function showSelfBillPreview(userId) {
+    const { from, to } = state.invoicePeriod;
+    const body = invoiceDrawer('Zelffactuur');
+    body.innerHTML = '<p class="muted">Voorbereiden…</p>';
+    try {
+      const p = await api(`/self-billing/preview?user_id=${userId}&from=${from}&to=${to}`);
+      const c = p.contractor;
+      document.getElementById('drawer-title').textContent = `Zelffactuur ${c.user_name}`;
+      const bookingText = {
+        ready: `Wordt als inkoopfactuur geboekt in e-Boekhouden op crediteur ${esc(c.eb_relation_code)}.`,
+        incomplete: 'Wordt niet geboekt in e-Boekhouden: koppel de zzp\'er aan een crediteur (Beheer › Medewerkers) en kies de kosten- en crediteurenrekening (Beheer › Koppeling).',
+        off: 'Boeken in e-Boekhouden staat uit; boek de factuur zelf.',
+      }[p.booking];
+      body.innerHTML = `
+        <div class="stack">
+          <h3 class="step"><span>1</span>Leverancier</h3>
+          <dl class="facts">
+            <dt>Bedrijf</dt><dd>${esc(c.company_name)}</dd>
+            <dt>Adres</dt><dd>${esc([c.address, c.postal_code, c.city].filter(Boolean).join(', ')) || '<span class="muted">–</span>'}</dd>
+            <dt>Btw</dt><dd>${esc(p.vat_label)}${c.vat_number ? ` · ${esc(c.vat_number)}` : ''}</dd>
+            <dt>IBAN</dt><dd>${esc(c.iban || '–')}</dd>
+            <dt>Akkoord zelffacturering</dt><dd>${c.agreement_date ? fmtDate(c.agreement_date, true) : '<span class="badge rejected">Ontbreekt</span>'}</dd>
+          </dl>
+          ${p.problems.length ? `<div class="notice error"><strong>Nog niet compleet:</strong><ul class="tight">${p.problems.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+          <h3 class="step"><span>2</span>Regels controleren</h3>
+          ${p.lines.length ? `<div class="table-wrap"><table class="data lines">
+            <thead><tr><th>Omschrijving</th><th class="num">Uren</th><th class="num">Tarief</th><th class="num">Bedrag</th></tr></thead>
+            <tbody>${p.lines.map((l) => `<tr><td>${esc(l.description)}</td><td class="num">${fh(l.hours)}</td><td class="num">${l.rate === null ? '<span class="badge rejected">geen</span>' : eur(l.rate)}</td><td class="num">${eur(l.amount)}</td></tr>`).join('')}</tbody>
+            <tfoot>
+              <tr><td>Subtotaal</td><td class="num">${fh(p.hours)}</td><td></td><td class="num">${eur(p.total_excl)}</td></tr>
+              <tr><td>${p.vat_rate ? `Btw ${p.vat_rate}%` : esc(p.vat_label)}</td><td></td><td></td><td class="num">${eur(p.vat_amount)}</td></tr>
+              <tr><td><strong>Totaal</strong></td><td></td><td></td><td class="num"><strong>${eur(p.total_incl)}</strong></td></tr>
+            </tfoot></table></div>
+          <details><summary class="small">Urenspecificatie (${p.entries.length} regels)</summary>
+            <div class="table-wrap"><table class="data lines"><thead><tr><th>Datum</th><th>Project</th><th class="num">Uren</th><th>Omschrijving</th></tr></thead>
+            <tbody>${p.entries.map((e) => `<tr><td class="nowrap">${fmtDate(e.work_date)}</td><td>${esc(e.project_name)}${e.activity_name ? `<span class="muted small block">${esc(e.activity_name)}</span>` : ''}</td><td class="num">${fh(e.hours)}</td><td>${esc(e.description)}</td></tr>`).join('')}</tbody></table></div>
+          </details>` : '<p class="muted">Geen goedgekeurde uren in deze periode.</p>'}
+          <form class="stack" id="make-selfbill">
+            <h3 class="step"><span>3</span>Maken</h3>
+            <div class="form-grid">
+              <label class="field">Factuurnummer<span class="hint">Volgende in jouw reeks voor zelffacturen</span><input name="number" value="${esc(p.number)}" maxlength="30"></label>
+              <label class="field">Factuurdatum<input type="date" name="date" value="${todayIso()}" required></label>
+            </div>
+            <p class="muted small">${bookingText} De zzp'er ziet de factuur daarna in de app onder Facturen en geeft akkoord of maakt bezwaar.</p>
+          </form>
+        </div>
+        <div class="drawer-foot"><button class="btn primary" type="submit" form="make-selfbill"${p.problems.length || !p.lines.length ? ' disabled' : ''}>Maak zelffactuur · ${eur(p.total_incl)}</button></div>`;
+      const form = body.querySelector('#make-selfbill');
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const ok = await confirmDialog('Zelffactuur maken', `Je maakt factuur ${esc(form.number.value)} namens ${esc(c.company_name)} van ${eur(p.total_incl)} incl. btw (${fh(p.hours)} uur).${p.booking === 'ready' ? ' Hij wordt als inkoopfactuur geboekt in e-Boekhouden.' : ''}`, 'Maak zelffactuur');
+        if (!ok) return;
+        try {
+          const res = await api('/self-billing/create', { method: 'POST', body: { user_id: userId, from, to, date: form.date.value, number: form.number.value } });
+          closeDrawer();
+          toast(`Zelffactuur ${res.self_bill.number} gemaakt${res.booked ? ' en geboekt in e-Boekhouden' : ''}`);
+          render();
+          window.open(sbDocUrl(res.self_bill.id), '_blank', 'noopener');
+        } catch (ex) { toast(ex.message, true); }
+      });
+    } catch (e) {
+      body.innerHTML = `<div class="notice error">${esc(e.message)}</div>`;
+    }
+  }
+
+  /* ================= Facturen van de zzp'er zelf ================= */
+
+  async function viewMyBills(view) {
+    const list = await api('/self-billing/mine');
+    view.innerHTML = `
+      <div class="stack" style="max-width:760px">
+        <h1>Mijn facturen</h1>
+        <p class="muted">Na goedkeuring van je uren maakt Coretic namens jou de factuur ("factuur uitgereikt door afnemer"), zoals afgesproken. Controleer elke factuur en geef akkoord, of maak bezwaar als er iets niet klopt.</p>
+        ${list.length ? list.map((x) => `
+          <section class="panel bill-card">
+            <div class="bill-head">
+              <div><h2>${esc(x.number)}</h2><span class="muted small">${fmtDate(x.bill_date, true)} · ${fmtRange(x.period_from, x.period_to)}</span></div>
+              ${sbStatus(x)}
+            </div>
+            <dl class="facts">
+              <dt>Uren</dt><dd>${fh(x.hours)}</dd>
+              <dt>Excl. btw</dt><dd>${eur(x.total_excl)}</dd>
+              <dt>Btw</dt><dd>${eur(x.vat_amount)}</dd>
+              <dt>Totaal</dt><dd><strong>${eur(x.total_incl)}</strong></dd>
+            </dl>
+            ${x.status === 'disputed' && x.dispute_reason && !x.reverted_at ? `<p class="small le-reject">Jouw bezwaar: ${esc(x.dispute_reason)}</p>` : ''}
+            <div class="row">
+              <a class="btn" href="${sbDocUrl(x.id)}" target="_blank" rel="noopener">Factuur bekijken</a>
+              ${!x.reverted_at && x.status !== 'accepted' ? `<button class="btn primary" type="button" data-accept="${x.id}">Akkoord</button>` : ''}
+              ${!x.reverted_at && x.status === 'open' ? `<button class="btn danger" type="button" data-dispute="${x.id}">Bezwaar maken</button>` : ''}
+            </div>
+          </section>`).join('')
+        : '<div class="panel empty"><h2>Nog geen facturen</h2><p>Zodra je uren zijn goedgekeurd en afgerekend, staat je factuur hier.</p></div>'}
+      </div>`;
+    view.querySelectorAll('[data-accept]').forEach((b) => b.addEventListener('click', async () => {
+      const x = list.find((y) => y.id === Number(b.dataset.accept));
+      if (!(await confirmDialog('Akkoord geven', `Je gaat akkoord met factuur ${esc(x.number)} van ${eur(x.total_incl)} incl. btw. Hiermee bevestig je dat de factuur klopt en als jouw factuur geldt.`, 'Akkoord'))) return;
+      try { await api(`/self-billing/${x.id}/accept`, { method: 'POST' }); toast('Akkoord gegeven'); render(); } catch (ex) { toast(ex.message, true); }
+    }));
+    view.querySelectorAll('[data-dispute]').forEach((b) => b.addEventListener('click', () => {
+      const x = list.find((y) => y.id === Number(b.dataset.dispute));
+      openDialog({
+        title: `Bezwaar tegen ${x.number}`,
+        submit: 'Bezwaar versturen',
+        danger: true,
+        body: '<label class="field">Wat klopt er niet?<textarea name="reason" required maxlength="1000"></textarea></label>',
+        onSubmit: async (fd) => { await api(`/self-billing/${x.id}/dispute`, { method: 'POST', body: { reason: fd.get('reason') } }); toast('Bezwaar verstuurd'); render(); },
+      });
+    }));
+  }
+
   /* ================= Rapportage ================= */
 
   const BUDGET_LEGEND = `<p class="budget-legend small"><span class="lvl-ok"><i></i>Ruim budget (50–100% over)</span>
@@ -2677,6 +2910,7 @@
         <td class="num">${u.submitted_hours ? fh(u.submitted_hours) : ''}</td>
       </tr>`).join('');
 
+    const hasCost = r.byProject.some((p) => p.cost > 0);
     const projects = r.byProject.map((p) => {
       const ratio = p.budget_hours ? p.hours_all_time / p.budget_hours : null;
       return `
@@ -2685,6 +2919,7 @@
           <td class="num">${fh(p.hours)}</td>
           <td class="num">${fh(p.approved_hours)}</td>
           <td class="num">${p.billable ? eur(p.value) : '–'}</td>
+          ${hasCost ? `<td class="num">${p.cost ? eur(p.cost) : '–'}</td><td class="num">${p.cost && p.billable ? `${eur(p.value - p.cost)}<span class="muted small block">${p.value ? Math.round(((p.value - p.cost) / p.value) * 100) : 0}%</span>` : '–'}</td>` : ''}
           <td>${p.budget_hours ? budgetBar(p.hours_all_time, p.budget_hours)
             : p.activity_budget_hours ? `${budgetBar(p.activity_budget_used, p.activity_budget_hours)}<span class="muted small">Som van activiteitbudgetten</span>`
               : '<span class="muted">Geen budget</span>'}</td>
@@ -2734,7 +2969,7 @@
             <p class="muted small">Het budget telt alle geschreven uren sinds de start van het project.</p>
             ${BUDGET_LEGEND}</div>
           <div class="table-wrap"><table class="data">
-            <thead><tr><th>Klant / project</th><th class="num">Uren</th><th class="num">Goedgekeurd</th><th class="num">Waarde</th><th>Budget</th></tr></thead>
+            <thead><tr><th>Klant / project</th><th class="num">Uren</th><th class="num">Goedgekeurd</th><th class="num">Waarde</th>${hasCost ? '<th class="num">Kosten zzp</th><th class="num">Marge</th>' : ''}<th>Budget</th></tr></thead>
             <tbody>${projects}</tbody></table></div>
         </section>
       </div>`;
@@ -2787,6 +3022,64 @@
         <input name="password" type="text" autocomplete="new-password"${u.id ? '' : ' required'} minlength="10"></label>
       ${u.id ? `<label class="check"><input type="checkbox" name="active"${u.active ? ' checked' : ''}> Actief (kan inloggen)</label>` : ''}`;
   }
+  // Ingehuurde zzp'er: leveranciersgegevens voor de zelffactuur.
+  const VAT_MODE_LABEL = { hoog: '21% btw', kor: 'Kleineondernemersregeling (geen btw)', verlegd: 'Btw verlegd' };
+  function contractorFields(c, u = {}) {
+    const on = Boolean(c);
+    const v = c || {};
+    return `
+      <div class="zzp-box" data-zzp-box${u.role && u.role !== 'employee' ? ' hidden' : ''}>
+        <label class="check"><input type="checkbox" name="zzp"${on ? ' checked' : ''}> Ingehuurde zzp'er: ik maak de facturen namens hem of haar (zelffacturering)</label>
+        <div class="stack" data-zzp-fields${on ? '' : ' hidden'}>
+          <div class="form-grid">
+            <label class="field">Bedrijfsnaam<input name="zzp_company_name" value="${esc(v.company_name)}" maxlength="200"></label>
+            <label class="field">Adres<input name="zzp_address" value="${esc(v.address)}" maxlength="200"></label>
+            <label class="field">Postcode<input name="zzp_postal_code" value="${esc(v.postal_code)}" maxlength="20"></label>
+            <label class="field">Plaats<input name="zzp_city" value="${esc(v.city)}" maxlength="100"></label>
+            <label class="field">KvK-nummer<input name="zzp_kvk" value="${esc(v.kvk)}" maxlength="20"></label>
+            <label class="field">Btw-nummer<input name="zzp_vat_number" value="${esc(v.vat_number)}" maxlength="30"></label>
+            <label class="field">IBAN<input name="zzp_iban" value="${esc(v.iban)}" maxlength="40"></label>
+            <label class="field">Btw op de factuur<select name="zzp_vat_mode">${Object.entries(VAT_MODE_LABEL).map(([k, l]) => opt(k, l, (v.vat_mode || 'hoog') === k)).join('')}</select></label>
+            <label class="field">Inkooptarief per uur (€)<span class="hint">Excl. btw; per project aan te passen bij Team</span><input name="zzp_default_cost_rate" inputmode="decimal" value="${fmtInput(v.default_cost_rate)}"></label>
+            <label class="field">Akkoord zelffacturering op<span class="hint">Datum van de schriftelijke afspraak</span><input type="date" name="zzp_agreement_date" value="${esc(v.agreement_date || '')}"></label>
+            <label class="field">Betaaltermijn (dagen)<input name="zzp_payment_term" inputmode="numeric" value="${esc(v.payment_term ?? 30)}"></label>
+            <label class="field">Crediteur in e-Boekhouden<span class="hint">Relatiecode${v.eb_relation_code ? `, nu gekoppeld: ${esc(v.eb_relation_code)}` : ''}</span><input name="zzp_eb_code" value="${esc(v.eb_relation_code || '')}" maxlength="15"></label>
+          </div>
+          <label class="check"><input type="checkbox" name="zzp_eb_create"> Relatie aanmaken in e-Boekhouden als die code nog niet bestaat</label>
+        </div>
+      </div>`;
+  }
+  function bindContractorFields(form) {
+    const box = form.querySelector('[data-zzp-box]');
+    if (!box) return;
+    const sync = () => {
+      box.hidden = form.role.value !== 'employee';
+      box.querySelector('[data-zzp-fields]').hidden = !form.zzp.checked;
+    };
+    form.zzp.addEventListener('change', sync);
+    form.role.addEventListener('change', sync);
+  }
+  async function saveContractor(userId, fd, before) {
+    const want = fd.get('zzp') === 'on' && fd.get('role') === 'employee';
+    if (!want) {
+      if (before) await api(`/admin/users/${userId}/contractor`, { method: 'DELETE' });
+      return;
+    }
+    const g = (k) => fd.get(`zzp_${k}`);
+    await api(`/admin/users/${userId}/contractor`, {
+      method: 'PUT',
+      body: {
+        company_name: g('company_name'), address: g('address'), postal_code: g('postal_code'), city: g('city'), kvk: g('kvk'),
+        vat_number: g('vat_number'), iban: g('iban'), vat_mode: g('vat_mode'), default_cost_rate: numOrNull(g('default_cost_rate')),
+        agreement_date: g('agreement_date') || null, payment_term: g('payment_term'),
+      },
+    });
+    const code = String(g('eb_code') || '').trim();
+    if (code && code !== ((before && before.eb_relation_code) || '')) {
+      await api(`/admin/users/${userId}/contractor/link`, { method: 'POST', body: { code, create: fd.get('zzp_eb_create') === 'on' } });
+    }
+  }
+
   // Rol accountant: contracturen verbergen en uitleg tonen.
   function bindRoleField(form) {
     const sync = () => {
@@ -2808,7 +3101,7 @@
           <tbody>${users.map((u) => `
             <tr>
               <td>${esc(u.name)}</td><td>${esc(u.email)}</td>
-              <td>${ROLE_LABEL[u.role] || u.role}</td>
+              <td>${ROLE_LABEL[u.role] || u.role}${u.is_contractor ? ' <span class="badge">zzp</span>' : ''}</td>
               <td class="num">${fh(u.weekly_hours)}</td>
               <td>${u.totp_enabled ? '<span class="badge approved">Aan</span>' : (['admin', 'accountant'].includes(u.role) ? '<span class="badge submitted">Nog instellen</span>' : '<span class="muted">Uit</span>')}</td>
               <td>${u.active ? 'Actief' : '<span class="muted">Inactief</span>'}</td>
@@ -2819,31 +3112,36 @@
     el.querySelector('[data-new]').addEventListener('click', () => openDialog({
       title: 'Medewerker toevoegen',
       submit: 'Toevoegen',
-      body: userForm(),
-      onOpen: bindRoleField,
+      body: userForm() + contractorFields(null),
+      onOpen: (form) => { bindRoleField(form); bindContractorFields(form); },
       onSubmit: async (fd) => {
-        await api('/admin/users', {
+        const created = await api('/admin/users', {
           method: 'POST',
           body: {
             name: fd.get('name'), email: fd.get('email'), role: fd.get('role'),
             weekly_hours: parseHours(fd.get('weekly_hours')), password: fd.get('password'),
           },
         });
+        try { await saveContractor(created.id, fd, null); } catch (ex) { toast(`Medewerker toegevoegd, maar de zzp-gegevens niet: ${ex.message}`, true); adminUsers(el); return; }
         toast(fd.get('role') === 'accountant'
           ? 'Accountant toegevoegd. Geef het e-mailadres en wachtwoord persoonlijk door; bij de eerste keer inloggen stelt hij 2FA in.'
           : 'Medewerker toegevoegd. Koppel hem of haar nu aan projecten.');
         adminUsers(el);
       },
     }));
-    el.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => {
+    el.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', async () => {
       const u = users.find((x) => x.id === Number(b.dataset.edit));
+      let contractor = null;
+      try { contractor = u.is_contractor ? await api(`/admin/users/${u.id}/contractor`) : null; } catch (ex) { toast(ex.message, true); return; }
       openDialog({
         title: `${u.name} wijzigen`,
-        body: userForm(u) + (u.totp_enabled ? `
+        wide: true,
+        body: userForm(u) + contractorFields(contractor, u) + (u.totp_enabled ? `
           <div class="notice"><strong>Tweestapsverificatie staat aan.</strong> Telefoon kwijt en geen herstelcodes meer?
             <div style="margin-top:0.5rem"><button type="button" class="btn small danger" data-mfa-reset>2FA resetten</button></div></div>` : ''),
         onOpen: (form) => {
           bindRoleField(form);
+          bindContractorFields(form);
           const b = form.querySelector('[data-mfa-reset]');
           if (!b) return;
           b.addEventListener('click', async () => {
@@ -2863,6 +3161,7 @@
           };
           if (fd.get('password')) body.password = fd.get('password');
           await api(`/admin/users/${u.id}`, { method: 'PATCH', body });
+          await saveContractor(u.id, fd, contractor);
           toast('Opgeslagen');
           adminUsers(el);
         },
@@ -3685,21 +3984,23 @@
     openDialog({
       title: `Team van ${project.name}`,
       body: `
-        <p class="muted small">Alleen teamleden zien dit project in hun urenstaat. Laat het tarief leeg om het projecttarief (${eur(project.default_rate)}) te gebruiken.</p>
+        <p class="muted small">Alleen teamleden zien dit project in hun urenstaat. Laat het tarief leeg om het projecttarief (${eur(project.default_rate)}) te gebruiken.${members.some((m) => m.is_contractor) ? ' Het inkooptarief geldt voor ingehuurde zzp\'ers; leeg is hun standaard inkooptarief.' : ''}</p>
         <div class="table-wrap"><table class="data">
-          <thead><tr><th>Medewerker</th><th>Tarief (€)</th></tr></thead>
+          <thead><tr><th>Medewerker</th><th>Tarief klant (€)</th>${members.some((m) => m.is_contractor) ? '<th>Inkooptarief (€)</th>' : ''}</tr></thead>
           <tbody>${members.map((m) => `
             <tr>
-              <td><label class="check"><input type="checkbox" name="u${m.user_id}"${m.assigned ? ' checked' : ''}> ${esc(m.name)}${m.active ? '' : ' <span class="muted small">(inactief)</span>'}</label></td>
+              <td><label class="check"><input type="checkbox" name="u${m.user_id}"${m.assigned ? ' checked' : ''}> ${esc(m.name)}${m.is_contractor ? ' <span class="badge">zzp</span>' : ''}${m.active ? '' : ' <span class="muted small">(inactief)</span>'}</label></td>
               <td><input name="r${m.user_id}" inputmode="decimal" value="${fmtInput(m.rate)}" placeholder="${fmtInput(project.default_rate)}" aria-label="Tarief ${esc(m.name)}" size="8"></td>
+              ${members.some((x) => x.is_contractor) ? `<td>${m.is_contractor ? `<input name="c${m.user_id}" inputmode="decimal" value="${fmtInput(m.cost_rate)}" placeholder="${fmtInput(m.default_cost_rate)}" aria-label="Inkooptarief ${esc(m.name)}" size="8">` : ''}</td>` : ''}
             </tr>`).join('')}</tbody>
         </table></div>`,
       onSubmit: async (fd) => {
         for (const m of members) {
           const want = fd.get(`u${m.user_id}`) === 'on';
           const rate = numOrNull(fd.get(`r${m.user_id}`));
-          if (want && (!m.assigned || rate !== m.rate)) {
-            await api(`/admin/projects/${project.id}/assignments/${m.user_id}`, { method: 'PUT', body: { rate } });
+          const costRate = m.is_contractor ? numOrNull(fd.get(`c${m.user_id}`)) : m.cost_rate;
+          if (want && (!m.assigned || rate !== m.rate || costRate !== m.cost_rate)) {
+            await api(`/admin/projects/${project.id}/assignments/${m.user_id}`, { method: 'PUT', body: { rate, cost_rate: costRate ?? null } });
           } else if (!want && m.assigned) {
             await api(`/admin/projects/${project.id}/assignments/${m.user_id}`, { method: 'DELETE' });
           }
@@ -3720,7 +4021,7 @@
   };
 
   async function adminEb(el) {
-    const s = await api('/admin/settings');
+    const [s, sb] = await Promise.all([api('/admin/settings'), api('/admin/selfbill-settings')]);
     let options = null;
     let optionsError = null;
     if (s.eb_configured) {
@@ -3751,7 +4052,7 @@
         ${optionsError ? `<div class="notice error">Keuzelijsten ophalen lukte niet: ${esc(optionsError)}. Je kunt de ids ook handmatig invullen.</div>` : ''}
         <form class="stack" id="eb-form" data-guard>
           <nav class="jump" aria-label="Onderdelen">
-            <a href="#eb-boek" data-jump>Boekhouding</a><a href="#eb-regels" data-jump>Factuurregels</a><a href="#eb-factuur" data-jump>Factuur</a><a href="#eb-mail" data-jump>E-mail</a>
+            <a href="#eb-boek" data-jump>Boekhouding</a><a href="#eb-regels" data-jump>Factuurregels</a><a href="#eb-factuur" data-jump>Factuur</a><a href="#eb-mail" data-jump>E-mail</a><a href="#eb-zzp" data-jump>Zelffacturering zzp</a>
           </nav>
           <fieldset class="panel panel-pad stack group" id="eb-boek">
           <div class="row spread"><legend><h2>Boekhouding</h2></legend>
@@ -3799,6 +4100,26 @@
             <label class="field">Tekst<textarea name="emailBody" rows="6" maxlength="5000" required>${esc(e.emailBody)}</textarea></label>
           </div>
           </fieldset>
+
+          <fieldset class="panel panel-pad stack group" id="eb-zzp">
+          <legend><h2>Zelffacturering zzp</h2></legend>
+          <p class="muted small">Voor ingehuurde zzp'ers maakt de app na goedkeuring de factuur namens hen ("factuur uitgereikt door afnemer"). Daarop staan jouw bedrijfsgegevens als afnemer.</p>
+          <div class="form-grid">
+            <label class="field">Bedrijfsnaam<input name="sb_companyName" value="${esc(sb.companyName)}" maxlength="200" placeholder="DVN Technology BV"></label>
+            <label class="field">Adres<input name="sb_companyAddress" value="${esc(sb.companyAddress)}" maxlength="200"></label>
+            <label class="field">Postcode<input name="sb_companyPostalCode" value="${esc(sb.companyPostalCode)}" maxlength="20"></label>
+            <label class="field">Plaats<input name="sb_companyCity" value="${esc(sb.companyCity)}" maxlength="100"></label>
+            <label class="field">KvK-nummer<input name="sb_companyKvk" value="${esc(sb.companyKvk)}" maxlength="20"></label>
+            <label class="field">Btw-nummer<input name="sb_companyVat" value="${esc(sb.companyVat)}" maxlength="30"></label>
+          </div>
+          <div class="form-grid">
+            <label class="field">Voorvoegsel nummer<span class="hint">Eigen reeks, los van je verkoopfacturen</span><input name="sb_prefix" value="${esc(sb.prefix)}" maxlength="20"></label>
+            <label class="field">Aantal cijfers<input name="sb_digits" inputmode="numeric" value="${esc(sb.digits)}"></label>
+            <label class="field">Kostenrekening<span class="hint">Bijvoorbeeld 7000 Inkoop / uitbesteed werk</span>${pick('sb_costLedgerId', options && options.ledgers, sb.costLedgerId, { filterCat: 'VW', allowEmpty: true, emptyLabel: 'Kies…' })}</label>
+            <label class="field">Crediteurenrekening<span class="hint">Bijvoorbeeld 1600 Crediteuren</span>${pick('sb_creditorLedgerId', options && options.ledgers, sb.creditorLedgerId, { filterCat: 'CRED', allowEmpty: true, emptyLabel: 'Kies…' })}</label>
+          </div>
+          <label class="check"><input type="checkbox" name="sb_process"${sb.process ? ' checked' : ''}> Zelffactuur direct als inkoopfactuur boeken in e-Boekhouden (op de crediteur van de zzp'er)</label>
+          </fieldset>
           <div class="save-bar"><span class="muted small" data-dirty-hint>Alle wijzigingen zijn opgeslagen</span><button class="btn primary" type="submit">Opslaan</button></div>
         </form>
       </div>`;
@@ -3830,6 +4151,15 @@
             emailDefault: fd.get('emailDefault') === 'on', emailSubject: fd.get('emailSubject'), emailBody: fd.get('emailBody'),
             emailTemplateId: fd.get('emailTemplateId'), invoiceText: fd.get('invoiceText'),
             numberPrefix: fd.get('numberPrefix'), numberDigits: fd.get('numberDigits'), printDefault: fd.get('printDefault') === 'on',
+          },
+        });
+        await api('/admin/selfbill-settings', {
+          method: 'PUT',
+          body: {
+            prefix: fd.get('sb_prefix'), digits: fd.get('sb_digits'), process: fd.get('sb_process') === 'on',
+            costLedgerId: fd.get('sb_costLedgerId'), creditorLedgerId: fd.get('sb_creditorLedgerId'),
+            companyName: fd.get('sb_companyName'), companyAddress: fd.get('sb_companyAddress'), companyPostalCode: fd.get('sb_companyPostalCode'),
+            companyCity: fd.get('sb_companyCity'), companyKvk: fd.get('sb_companyKvk'), companyVat: fd.get('sb_companyVat'),
           },
         });
         delete form.dataset.dirty;
