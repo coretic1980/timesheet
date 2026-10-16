@@ -210,6 +210,8 @@
   };
   const icon = (name, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
   const isNarrow = () => window.matchMedia('(max-width: 760px)').matches;
+  // Logo uit de huisstijl; lichte variant in donkere modus.
+  const logoHTML = (cls = '') => `<picture class="logo ${cls}"><source srcset="/assets/logo-light.png" media="(prefers-color-scheme: dark)"><img src="/assets/logo.png" alt="Coretic" width="126" height="40"></picture>`;
 
   // Wie mag wat zien. De accountant kan alleen inzien: Controle, Rapportage en zijn eigen account.
   const ROUTES = {
@@ -259,7 +261,7 @@
       </nav>`;
     return `
       <header class="topbar">
-        <a class="brand" href="#/">Coretic <span>uren</span></a>
+        <a class="brand" href="#/" aria-label="Coretic uren, naar start">${logoHTML()}<span class="brand-app">Uren</span></a>
         <nav class="nav" aria-label="Hoofdmenu">${links}</nav>
         <div class="userbox">
           <a href="#/account" class="user-link"><span class="avatar" aria-hidden="true">${esc(initials(state.user.name))}</span><span class="user-name">${esc(state.user.name)}</span></a>
@@ -392,7 +394,8 @@
     app.innerHTML = `
       <div class="login">
         <div class="panel">
-          <h1>Coretic uren</h1>
+          <div class="login-brand">${logoHTML('logo-lg')}</div>
+          <h1>Inloggen</h1>
           <p class="muted">Log in om je uren te schrijven.</p>
           <form id="login-form">
             <label class="field">E-mailadres<input type="email" name="email" autocomplete="username" required></label>
@@ -430,6 +433,7 @@
     app.innerHTML = `
       <div class="login">
         <div class="panel">
+          <div class="login-brand">${logoHTML('logo-lg')}</div>
           <h1>Tweestapsverificatie</h1>
           <p class="muted" data-hint>Vul de 6-cijferige code in uit je authenticator-app.</p>
           <form id="mfa-form">
@@ -577,6 +581,7 @@
     app.innerHTML = `
       <div class="login">
         <div class="panel mfa-panel">
+          <div class="login-brand">${logoHTML('logo-lg')}</div>
           <h1>Tweestapsverificatie instellen</h1>
           <p class="muted">${state.user.role === 'accountant'
             ? 'Omdat je financiële gegevens kunt inzien, is een tweede stap bij het inloggen verplicht.'

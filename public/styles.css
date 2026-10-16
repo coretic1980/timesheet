@@ -1,41 +1,49 @@
 :root {
-  --paper: #EEF1F4;
+  /* Huisstijl Coretic (coretic.nl): navy met oranje accent */
+  --paper: #F3F5F9;
   --surface: #FFFFFF;
-  --ink: #17212B;
-  --muted: #5B6773;
-  --line: #D3DAE1;
-  --line-soft: #E6EAEE;
-  --accent: #0F5E7A;
-  --accent-soft: #DCEBF0;
+  --ink: #001D45;
+  --muted: #4A5872;
+  --line: #CDD5E1;
+  --line-soft: #E3E8EF;
+  --accent: #001D45;
+  --accent-soft: #E6ECF5;
   --on-accent: #FFFFFF;
-  --draft: #8E9AA6;
-  --submitted: #B7791F;
+  --brand: #FF8D00;
+  --brand-ink: #B35F00;
+  --brand-soft: #FFE6C7;
+  --draft: #8A97A8;
+  --submitted: #A86A00;
   --approved: #2F7D4F;
   --rejected: #B3412E;
   --invoiced: #5B4FA0;
-  --focus: #1F8FB8;
-  --radius-s: 4px;
-  --radius-m: 8px;
-  --font: 'IBM Plex Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --focus: #FF8D00;
+  --radius-s: 6px;
+  --radius-m: 10px;
+  --font: 'Schibsted Grotesk', system-ui, -apple-system, 'Segoe UI', Arial, sans-serif;
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #12181E;
-    --surface: #1A222A;
-    --ink: #E6EBF0;
-    --muted: #96A3AF;
-    --line: #2E3A45;
-    --line-soft: #24303A;
-    --accent: #4FA9C9;
-    --accent-soft: #1C3946;
-    --on-accent: #0B1A21;
-    --draft: #7C8894;
-    --submitted: #DDA448;
+    --paper: #00122B;
+    --surface: #0A2347;
+    --ink: #E8EEF7;
+    --muted: #9AAAC2;
+    --line: #1F3B63;
+    --line-soft: #16304F;
+    --accent: #FFA53D;
+    --accent-soft: #13325C;
+    --on-accent: #00122B;
+    --brand: #FF8D00;
+    --brand-ink: #FFA53D;
+    --brand-soft: #3A2A12;
+    --draft: #7F8EA3;
+    --submitted: #E6B34D;
     --approved: #5CB07F;
     --rejected: #E07563;
-    --invoiced: #9C91E0;
+    --invoiced: #A79CEB;
+    --focus: #FF8D00;
     color-scheme: dark;
   }
 }
@@ -74,7 +82,6 @@ p { margin: 0 0 0.75rem; max-width: 70ch; }
   border-bottom: 1px solid var(--line);
 }
 .brand { font-weight: 700; font-size: 1.05rem; color: var(--ink); text-decoration: none; white-space: nowrap; }
-.brand span { color: var(--accent); }
 .nav { display: flex; gap: 0.25rem; flex: 1; overflow-x: auto; }
 .nav a {
   padding: 0.4rem 0.75rem;
@@ -1059,3 +1066,34 @@ ul.tight { margin: 0.35rem 0 0; padding-left: 1.1rem; }
 .bill-head h2 { margin-bottom: 0.15rem; }
 .bill-card .facts { grid-template-columns: repeat(4, max-content 1fr); }
 @media (max-width: 640px) { .bill-card .facts { grid-template-columns: max-content 1fr; } }
+
+/* ---------- Huisstijl Coretic ---------- */
+body { letter-spacing: -0.005em; }
+h1 { font-weight: 700; letter-spacing: -0.025em; }
+h2, h3 { letter-spacing: -0.015em; }
+.brand { display: inline-flex; align-items: center; gap: 0.6rem; }
+.brand .logo img { display: block; height: 34px; width: auto; }
+.brand-app { padding-left: 0.6rem; border-left: 1px solid var(--line); color: var(--muted); font-weight: 600; font-size: 1rem; }
+.login-brand { margin-bottom: 1.25rem; }
+.login-brand .logo img { display: block; height: 44px; width: auto; }
+.nav a[aria-current="page"] { color: var(--ink); background: var(--brand-soft); box-shadow: inset 0 -2px 0 var(--brand); }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--brand); }
+.seg button[aria-pressed="true"] { background: var(--brand-soft); color: var(--ink); }
+.avatar { background: var(--accent); color: var(--on-accent); }
+.bar > span, .week-progress > span { background: var(--brand); }
+table.grid thead th.today { box-shadow: inset 0 3px 0 var(--brand); }
+table.grid thead th.today .dnum, .day-chip.today .dc-num { color: var(--brand-ink); }
+.tile-accent { border-left-color: var(--brand); }
+.tile:hover { border-color: var(--brand); }
+.tabbar [aria-current="page"] { color: var(--brand-ink); }
+.badge.count, .tab-badge { background: var(--brand); color: #00122B; }
+.btn.primary:hover { filter: none; background: color-mix(in srgb, var(--accent) 88%, var(--brand)); border-color: color-mix(in srgb, var(--accent) 88%, var(--brand)); }
+.jump a:hover { border-color: var(--brand); color: var(--ink); }
+.ms.active .ms-button { border-color: var(--brand); box-shadow: inset 0 0 0 1px var(--brand); }
+.filter-toggle.active { border-color: var(--brand); color: var(--ink); }
+td.cell input.hrs:focus { background: color-mix(in srgb, var(--brand-soft) 60%, var(--surface)); }
+.badge.readonly { background: var(--brand-soft); color: var(--ink); }
+@media (max-width: 760px) {
+  .brand .logo img { height: 30px; }
+  .brand-app { font-size: 0.9rem; padding-left: 0.5rem; }
+}

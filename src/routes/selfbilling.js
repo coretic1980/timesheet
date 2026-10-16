@@ -307,25 +307,26 @@ function documentHtml(s) {
   return `<!doctype html>
 <html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Factuur ${h(s.number)}</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;600;700&display=swap">
 <style>
-  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; color: #17212B; margin: 0; background: #EEF1F4; font-size: 14px; line-height: 1.45; }
+  body { font-family: 'Schibsted Grotesk', system-ui, -apple-system, 'Segoe UI', Arial, sans-serif; color: #001D45; margin: 0; background: #F3F5F9; font-size: 14px; line-height: 1.45; }
   .page { max-width: 800px; margin: 24px auto; background: #fff; padding: 48px 56px; box-shadow: 0 2px 12px rgba(0,0,0,.08); }
   .bar { max-width: 800px; margin: 16px auto 0; display: flex; justify-content: flex-end; gap: 8px; }
-  .bar button { font: inherit; padding: 8px 16px; border: 1px solid #0F5E7A; background: #0F5E7A; color: #fff; border-radius: 4px; cursor: pointer; }
+  .bar button { font: inherit; padding: 8px 16px; border: 1px solid #001D45; background: #001D45; color: #fff; border-radius: 4px; cursor: pointer; }
   h1 { font-size: 26px; margin: 0; letter-spacing: -0.01em; }
-  .tag { display: inline-block; margin-top: 6px; padding: 2px 10px; border-radius: 99px; background: #DCEBF0; color: #0F5E7A; font-weight: 600; font-size: 12px; }
+  .tag { display: inline-block; margin-top: 6px; padding: 2px 10px; border-radius: 99px; background: #FFE6C7; color: #001D45; font-weight: 600; font-size: 12px; }
   .void { display: inline-block; margin-top: 6px; margin-left: 6px; padding: 2px 10px; border-radius: 99px; background: #F6DCD6; color: #B3412E; font-weight: 700; font-size: 12px; }
   .parties { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin: 32px 0 24px; }
-  .parties h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #5B6773; margin: 0 0 6px; }
+  .parties h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #4A5872; margin: 0 0 6px; }
   .meta { display: grid; grid-template-columns: repeat(4, auto); gap: 4px 24px; justify-content: start; margin-bottom: 24px; }
-  .meta dt { color: #5B6773; font-size: 12px; } .meta dd { margin: 0; font-weight: 600; }
+  .meta dt { color: #4A5872; font-size: 12px; } .meta dd { margin: 0; font-weight: 600; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #E6EAEE; vertical-align: top; }
-  th { font-size: 12px; color: #5B6773; font-weight: 600; }
+  th { font-size: 12px; color: #4A5872; font-weight: 600; }
   .num { text-align: right; white-space: nowrap; }
   .totals { margin-left: auto; width: 300px; margin-top: 12px; }
-  .totals td { border: 0; padding: 4px 6px; } .totals tr.grand td { border-top: 2px solid #17212B; font-weight: 700; font-size: 16px; padding-top: 8px; }
-  .note { margin-top: 28px; padding: 12px 14px; background: #EEF1F4; border-radius: 6px; font-size: 13px; }
+  .totals td { border: 0; padding: 4px 6px; } .totals tr.grand td { border-top: 2px solid #001D45; font-weight: 700; font-size: 16px; padding-top: 8px; }
+  .note { margin-top: 28px; padding: 12px 14px; background: #F3F5F9; border-radius: 6px; font-size: 13px; }
   .spec { margin-top: 36px; } .spec h2 { font-size: 15px; } .spec td, .spec th { font-size: 12px; padding: 5px 6px; }
   @media print { body { background: #fff; } .page { box-shadow: none; margin: 0; padding: 0; max-width: none; } .bar { display: none; } }
   @media (max-width: 640px) { .page { padding: 24px 18px; margin: 0; } .parties { grid-template-columns: 1fr; gap: 16px; } .meta { grid-template-columns: auto auto; } .totals { width: 100%; } }
