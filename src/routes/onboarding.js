@@ -74,7 +74,16 @@ r.get('/meta', ah(async (req, res) => {
        FROM users u LEFT JOIN contractors c ON c.user_id = u.id
       WHERE u.role = 'employee' ORDER BY u.active DESC, u.name`
   )).rows;
-  res.json({ settings: await O.getOnboardingSettings(), users, can_edit: req.user.role === 'admin' });
+  const projects = (await query(
+    `SELECT p.id, p.name, p.code, p.billable, c.name AS client_name FROM projects p LEFT JOIN clients c ON c.id = p.client_id
+      WHERE p.active ORDER BY c.name NULLS LAST, p.name`
+  )).rows;
+  const acts = (await query(
+    `SELECT pa.project_id, a.id, a.name FROM project_activities pa JOIN activities a ON a.id = pa.activity_id
+      WHERE a.active ORDER BY a.name`
+  )).rows;
+  for (const p of projects) p.activities = acts.filter((a) => a.project_id === p.id).map(({ id, name }) => ({ id, name }));
+  res.json({ settings: await O.getOnboardingSettings(), users, projects, can_edit: req.user.role === 'admin' });
 }));
 
 r.put('/settings', ah(async (req, res) => {
@@ -142,6 +151,8 @@ r.put('/:id', ah(async (req, res) => {
       throw err;
     }
     const prev = R.normalize(row.data);
+    // Projecten wijzig je via /:id/assignments, zodat de teams meteen meegaan.
+    data.toewijzing = prev.toewijzing;
     if (row.status === 'actief' && (prev.opdracht.start !== data.opdracht.start || prev.opdracht.eind !== data.opdracht.eind)) {
       await audit(db, req.user.id, 'onboarding.period', `Looptijd van vrijgegeven dossier ${data.zzp.naam || id} gewijzigd: ${prev.opdracht.start || '?'} t/m ${prev.opdracht.eind || '?'} → ${data.opdracht.start || '?'} t/m ${data.opdracht.eind || '?'}`, { dossier_id: id });
     }
@@ -169,7 +180,10 @@ r.post('/:id/status', ah(async (req, res) => {
   const row = await getRow(intParam(req.params.id));
   const to = req.body.status;
   if (!STATUS_TARGETS.includes(to)) throw new HttpError(400, 'Gebruik Vrijgeven om een dossier actief te maken');
-  await query('UPDATE onboarding_dossiers SET status = $1, updated_at = now() WHERE id = $2', [to, row.id]);
+  await tx(async (db) => {
+    await db.query('UPDATE onboarding_dossiers SET status = $1, updated_at = now() WHERE id = $2', [to, row.id]);
+    await O.syncAssignments(db, row.user_id);
+  });
   const msg = row.status === 'actief'
     ? `Inhuurdossier ${dossierName(row)} op ${R.STATUS[to]} gezet; uren schrijven is niet meer mogelijk`
     : `Inhuurdossier ${dossierName(row)}: ${R.STATUS[row.status]} → ${R.STATUS[to]}`;
@@ -190,14 +204,64 @@ r.post('/:id/release', ah(async (req, res) => {
   if (p.soft.length && note.length < 15) {
     return res.status(409).json({ error: 'Leg vast waarom je ondanks de waarschuwingen vrijgeeft', code: 'NEEDS_NOTE', soft: p.soft });
   }
-  await query(
-    `UPDATE onboarding_dossiers SET status = 'actief', released_at = now(), released_by = $1, release_note = $2, updated_at = now() WHERE id = $3`,
-    [req.user.id, note || null, row.id]
-  );
-  await audit(null, req.user.id, 'onboarding.release',
-    `${dossierName(row)} vrijgegeven voor urenregistratie (${d.opdracht.start} t/m ${d.opdracht.eind})${p.soft.length ? `, ondanks: ${p.soft.join(' ')} Motivering: ${note}` : ''}`,
-    { dossier_id: row.id, user_id: row.user_id });
+  const names = await projectNames(d.toewijzing);
+  await tx(async (db) => {
+    await db.query(
+      `UPDATE onboarding_dossiers SET status = 'actief', released_at = now(), released_by = $1, release_note = $2, updated_at = now() WHERE id = $3`,
+      [req.user.id, note || null, row.id]
+    );
+    await O.syncAssignments(db, row.user_id);
+    await audit(db, req.user.id, 'onboarding.release',
+      `${dossierName(row)} vrijgegeven voor urenregistratie (${d.opdracht.start} t/m ${d.opdracht.eind}) op ${names}${p.soft.length ? `, ondanks: ${p.soft.join(' ')} Motivering: ${note}` : ''}`,
+      { dossier_id: row.id, user_id: row.user_id });
+  });
   res.json({ ok: true });
+}));
+
+async function projectNames(list) {
+  if (!list.length) return 'geen projecten';
+  const { rows } = await query(
+    `SELECT p.id, p.name, c.name AS client_name FROM projects p LEFT JOIN clients c ON c.id = p.client_id WHERE p.id = ANY($1)`,
+    [list.map((x) => x.project_id)]
+  );
+  const acts = (await query('SELECT id, name FROM activities WHERE id = ANY($1)', [list.flatMap((x) => x.activity_ids)])).rows;
+  return list.map((x) => {
+    const p = rows.find((y) => y.id === x.project_id);
+    const label = p ? `${p.client_name ? `${p.client_name} / ` : ''}${p.name}` : `project ${x.project_id}`;
+    return x.activity_ids.length ? `${label} (${x.activity_ids.map((a) => (acts.find((y) => y.id === a) || {}).name || a).join(', ')})` : label;
+  }).join('; ');
+}
+
+// Projecten en activiteiten waarop de zzp'er mag schrijven. Bij een vrijgegeven dossier gaan de teams direct mee.
+r.put('/:id/assignments', ah(async (req, res) => {
+  adminOnly(req);
+  const id = intParam(req.params.id);
+  const items = R.normalizeAssignments(req.body.items);
+  if (items.length) {
+    const ok = (await query('SELECT id FROM projects WHERE id = ANY($1) AND active', [items.map((x) => x.project_id)])).rows.map((x) => x.id);
+    const missing = items.filter((x) => !ok.includes(x.project_id));
+    if (missing.length) throw new HttpError(400, 'Een gekozen project bestaat niet of is afgesloten');
+    const links = (await query('SELECT project_id, activity_id FROM project_activities WHERE project_id = ANY($1)', [items.map((x) => x.project_id)])).rows;
+    for (const x of items) {
+      const own = links.filter((l) => l.project_id === x.project_id).map((l) => l.activity_id);
+      if (x.activity_ids.some((a) => !own.includes(a))) throw new HttpError(400, 'Een gekozen activiteit hoort niet bij het project');
+      if (own.length && x.activity_ids.length === own.length) x.activity_ids = []; // alles gekozen = alle activiteiten, ook later toegevoegde
+    }
+  }
+  const names = await projectNames(items);
+  const out = await tx(async (db) => {
+    const row = (await db.query('SELECT id, status, user_id, data FROM onboarding_dossiers WHERE id = $1 FOR UPDATE', [id])).rows[0];
+    if (!row) throw new HttpError(404, 'Dossier niet gevonden');
+    if (row.status === 'actief' && !items.length) throw new HttpError(400, 'Een vrijgegeven opdracht moet minstens één project hebben');
+    const data = R.normalize(row.data);
+    const previous = data.toewijzing.map((x) => x.project_id);
+    data.toewijzing = items;
+    const u = (await db.query('UPDATE onboarding_dossiers SET data = $1::jsonb, updated_at = now() WHERE id = $2 RETURNING updated_at', [JSON.stringify(data), id])).rows[0];
+    const sync = row.status === 'actief' ? await O.syncAssignments(db, row.user_id, previous) : null;
+    await audit(db, req.user.id, 'onboarding.projects', `Projecten voor ${data.zzp.naam || `dossier ${id}`}${row.status === 'actief' ? ' (vrijgegeven)' : ''}: ${names}`, { dossier_id: id, ...(sync || {}) });
+    return { updated_at: u.updated_at, toewijzing: items };
+  });
+  res.json(out);
 }));
 
 /* ---------- intakelink ---------- */

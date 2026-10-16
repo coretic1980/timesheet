@@ -125,13 +125,14 @@ Onder **Inhuur** leg je per opdracht een dossier aan waarmee je bij een controle
 4. **Overeenkomst:** wordt opgebouwd uit het dossier, met vrije vervanging, eindklant, relatiebeding, verwerkersovereenkomst en zelffacturering als opties. Open hem om af te drukken of als pdf te bewaren, en vul de tekendatum in.
 5. **Documenten:** de lijst past zich aan de situatie aan (eindklant, KOR, persoonsgegevens, zelffacturering). Per document een status, datum en de bestanden.
 6. **Account:** maak vanuit het dossier het account aan, of koppel een bestaand account. **Zzp-gegevens overnemen** vult de leveranciersgegevens voor de zelffactuur (bedrijfsnaam, adres, KvK, btw, KOR, inkooptarief en datum akkoord zelffacturering).
-7. **Vrijgeven voor uren:** kan pas als de intake compleet en bevestigd is, de overeenkomst getekend, de startdocumenten binnen en start- en einddatum ingevuld. Bij een hoge risico-indicatie, een tarief onder €38 of doorlenen moet je een motivering vastleggen. Die komt in het logboek en in het dossier.
-8. **Praktijkcheck:** elk half jaar zeven vragen over hoe het werk echt gaat. Het overzicht waarschuwt als een check eraan komt of verlopen is.
-9. **Afronden:** zet het dossier op Afgerond als de opdracht klaar is. De zzp'er kan dan geen uren meer schrijven.
+7. **Projecten:** kies op welke projecten, en eventueel welke activiteiten, de zzp'er mag schrijven. Bij vrijgeven komt hij automatisch in het team van die projecten en ziet hij in zijn urenstaat alleen die projecten en activiteiten. Wijzig je dit bij een vrijgegeven opdracht, dan gaan de teams direct mee. Bij afronden gaat hij uit het team; handmatig toegevoegde teams blijven staan.
+8. **Vrijgeven voor uren:** kan pas als de intake compleet en bevestigd is, de overeenkomst getekend, de startdocumenten binnen, minstens één project toegewezen en start- en einddatum ingevuld. Bij een hoge risico-indicatie, een tarief onder €38 of doorlenen moet je een motivering vastleggen. Die komt in het logboek en in het dossier.
+9. **Praktijkcheck:** elk half jaar zeven vragen over hoe het werk echt gaat. Het overzicht waarschuwt als een check eraan komt of verlopen is.
+10. **Afronden:** zet het dossier op Afgerond als de opdracht klaar is. De zzp'er kan dan geen uren meer schrijven.
 
 **Urenblokkade**
 - Geldt alleen voor gebruikers die als ingehuurde zzp'er staan (Beheer › Medewerkers). Medewerkers en beheerders merken er niets van.
-- De server weigert uren buiten een vrijgegeven opdracht, ook bij indienen. De zzp'er ziet in de urenstaat waarom.
+- De server weigert uren buiten een vrijgegeven opdracht, buiten de looptijd en op projecten of activiteiten die niet bij de opdracht horen, ook bij indienen. De zzp'er ziet in de urenstaat waarom.
 - **Let op bij de eerste deploy:** zzp'ers die nu al uren schrijven, kunnen dat pas weer als hun dossier is vrijgegeven. Ze staan bovenaan in Inhuur › Te doen. Wil je eerst de dossiers op orde brengen, zet de blokkade dan tijdelijk uit bij Inhuur › Instellingen.
 
 **Verder**

@@ -1163,6 +1163,13 @@ tr.ib-row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px;
   .ib-savebar { bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
 }
 
+.ib-proj-group { display: grid; gap: 0.4rem; }
+.ib-proj-group h3 { font-size: 0.95rem; color: var(--muted); margin: 0.4rem 0 0; }
+.ib-proj { display: grid; gap: 0.4rem; padding: 0.6rem 0.8rem; border: 1px solid var(--line-soft); border-radius: var(--radius-s); }
+.ib-proj.on { border-color: var(--accent); background: var(--accent-soft); }
+.ib-acts { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; align-items: center; padding-left: 1.6rem; }
+.ib-acts .check { font-weight: 400; }
+
 /* ---------- Publieke intakepagina ---------- */
 
 body.intake-page { background: var(--paper); }
