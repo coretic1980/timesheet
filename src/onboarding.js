@@ -49,8 +49,7 @@ async function hoursAccess(userId) {
   const s = await getOnboardingSettings();
   if (!s.enforce) return { required: false, periods: [] };
   const { rows } = await query(
-    `SELECT id, data->'opdracht'->>'start' AS start, data->'opdracht'->>'eind' AS eind,
-            data->'opdracht'->>'resultaat' AS resultaat
+    `SELECT id, data->'opdracht'->>'start' AS start, data->'opdracht'->>'eind' AS eind, data->'toewijzing' AS toewijzing
        FROM onboarding_dossiers WHERE user_id = $1 AND status = 'actief' ORDER BY data->'opdracht'->>'start'`,
     [userId]
   );
@@ -59,12 +58,43 @@ async function hoursAccess(userId) {
   return {
     required: true,
     finished,
-    periods: rows.map((r) => ({ start: R.isIso(r.start) ? r.start : null, eind: R.isIso(r.eind) ? r.eind : null })),
+    periods: rows.map((r) => ({
+      start: R.isIso(r.start) ? r.start : null,
+      eind: R.isIso(r.eind) ? r.eind : null,
+      // Lege toewijzing (dossiers van vóór deze functie): alle projecten uit het team.
+      projects: R.normalizeAssignments(r.toewijzing),
+    })),
   };
 }
 
-const allowedOn = (access, date) => !access.required
-  || access.periods.some((p) => (!p.start || date >= p.start) && (!p.eind || date <= p.eind));
+const inPeriod = (p, date) => (!p.start || date >= p.start) && (!p.eind || date <= p.eind);
+const allowedOn = (access, date) => !access.required || access.periods.some((p) => inPeriod(p, date));
+
+// Mag op dit project en deze activiteit worden geschreven binnen deze periode?
+function coversWork(p, projectId, activityId) {
+  if (!p.projects.length) return true;
+  const a = p.projects.find((x) => x.project_id === projectId);
+  if (!a) return false;
+  return !a.activity_ids.length || (activityId != null && a.activity_ids.includes(activityId));
+}
+const allowedWork = (access, date, projectId, activityId) => !access.required
+  || access.periods.some((p) => inPeriod(p, date) && coversWork(p, projectId, activityId));
+
+// Projecten en activiteiten die de zzp'er in een periode mag zien: Map project_id -> Set(activity) of 'all'.
+function scopeFor(access, from, to) {
+  if (!access.required) return null;
+  const m = new Map();
+  for (const p of access.periods) {
+    if ((p.start && p.start > to) || (p.eind && p.eind < from)) continue;
+    if (!p.projects.length) return null;
+    for (const x of p.projects) {
+      const cur = m.get(x.project_id);
+      if (cur === 'all' || !x.activity_ids.length) m.set(x.project_id, 'all');
+      else m.set(x.project_id, new Set([...(cur || []), ...x.activity_ids]));
+    }
+  }
+  return m;
+}
 
 function gateMessage(access, date) {
   if (!access.periods.length) {
@@ -72,17 +102,42 @@ function gateMessage(access, date) {
       ? 'Je opdracht is afgerond, dus je kunt geen uren meer schrijven. Voor nieuw werk maakt Coretic eerst een nieuwe opdracht met je af.'
       : 'Je kunt nog geen uren schrijven: je onboarding bij Coretic is nog niet afgerond. Neem contact op met Coretic.';
   }
+  if (allowedOn(access, date)) return 'Dit project of deze activiteit hoort niet bij je opdracht. Neem contact op met Coretic als dat wel zo zou moeten zijn.';
   const list = access.periods.map((p) => `${p.start ? R.fmtShort(p.start) : 'start'} t/m ${p.eind ? R.fmtShort(p.eind) : 'einde'}`).join(', ');
   return `Op ${R.fmtShort(date)} kun je geen uren schrijven: die datum valt buiten de looptijd van je opdracht (${list}).`;
 }
 
-async function assertHoursAllowed(userId, date) {
+async function assertHoursAllowed(userId, date, projectId = null, activityId = null) {
   const access = await hoursAccess(userId);
-  if (!allowedOn(access, date)) {
+  const ok = projectId == null ? allowedOn(access, date) : allowedWork(access, date, projectId, activityId);
+  if (!ok) {
     const err = new HttpError(403, gateMessage(access, date));
     err.code = 'ONBOARDING_REQUIRED';
     throw err;
   }
+}
+
+// Teams van projecten gelijktrekken met de vrijgegeven dossiers van deze gebruiker:
+// projecten uit een vrijgegeven dossier krijgen de zzp'er in het team, projecten die alleen
+// in niet-actieve dossiers staan gaan eruit. Handmatig toegevoegde projecten blijven staan.
+// previous: projecten die net uit een dossier zijn gehaald (die tellen nog als beheerd door de inhuur).
+async function syncAssignments(db, userId, previous = []) {
+  if (!userId) return { added: [], removed: [] };
+  const { rows } = await db.query(`SELECT status, data->'toewijzing' AS t FROM onboarding_dossiers WHERE user_id = $1`, [userId]);
+  const active = new Set();
+  const managed = new Set(previous);
+  for (const r of rows) {
+    for (const x of R.normalizeAssignments(r.t)) {
+      managed.add(x.project_id);
+      if (r.status === 'actief') active.add(x.project_id);
+    }
+  }
+  const current = new Set((await db.query('SELECT project_id FROM assignments WHERE user_id = $1', [userId])).rows.map((x) => x.project_id));
+  const added = [...active].filter((p) => !current.has(p));
+  const removed = [...managed].filter((p) => !active.has(p) && current.has(p));
+  for (const p of added) await db.query('INSERT INTO assignments (project_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [p, userId]);
+  if (removed.length) await db.query('DELETE FROM assignments WHERE user_id = $1 AND project_id = ANY($2)', [userId, removed]);
+  return { added, removed };
 }
 
 /* ---------- intakelinks ---------- */
@@ -237,7 +292,7 @@ function dossierPage(row, settings, files, userName) {
 
 module.exports = {
   R, getOnboardingSettings, setOnboardingSettings, ONB_DEFAULTS,
-  hoursAccess, allowedOn, gateMessage, assertHoursAllowed,
+  hoursAccess, allowedOn, allowedWork, scopeFor, gateMessage, assertHoursAllowed, syncAssignments,
   hashToken, newInviteToken, dossierByToken, INVITE_DAYS,
   storeFile, listFiles, sendFile, MAX_FILE,
   contractPage, dossierPage,

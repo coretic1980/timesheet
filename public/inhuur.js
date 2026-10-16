@@ -7,7 +7,7 @@ window.CoreticInhuur = (() => {
   const esc = R.esc;
   let ctx = null;
   const canEdit = () => ctx.user.role === 'admin';
-  const STEPS = [['intake', 'Intake'], ['overeenkomst', 'Overeenkomst'], ['documenten', 'Documenten'], ['praktijk', 'Praktijkcheck']];
+  const STEPS = [['intake', 'Intake'], ['overeenkomst', 'Overeenkomst'], ['documenten', 'Documenten'], ['projecten', 'Projecten'], ['praktijk', 'Praktijkcheck']];
   const STATUS_BADGE = { intake: 'submitted', contract: 'invoiced', actief: 'approved', afgerond: '', afgewezen: 'rejected' };
   const statusBadge = (s) => `<span class="badge ${STATUS_BADGE[s] || ''}">${esc(R.STATUS[s] || s)}</span>`;
   const verdictBadge = (v) => (v ? `<span class="badge ${{ ok: 'approved', warn: 'submitted', bad: 'rejected' }[v]}">${R.LBL[v]}</span>` : '<span class="badge">onvolledig</span>');
@@ -163,6 +163,7 @@ window.CoreticInhuur = (() => {
         intake: a.verdict ? R.LBL[a.verdict] : `${a.answered}/${R.SCORED.length} vragen`,
         overeenkomst: R.isIso(d.contract.getekend) ? `getekend ${R.fmtShort(d.contract.getekend)}` : 'niet getekend',
         documenten: `${dc.done}/${dc.total} compleet`,
+        projecten: d.toewijzing.length ? `${d.toewijzing.length} ${d.toewijzing.length === 1 ? 'project' : 'projecten'}` : 'nog geen',
         praktijk: nx ? `volgende ${R.fmtShort(nx)}` : `${d.checks.length} vastgelegd`,
       };
       return { steps };
@@ -181,6 +182,7 @@ window.CoreticInhuur = (() => {
           <dl class="facts">
             <dt>Account</dt><dd>${u ? `${esc(u.name)} <span class="muted small">${esc(u.email)}</span>${userMeta && userMeta.is_contractor ? ' <span class="badge">zzp\'er</span>' : ' <span class="badge rejected">nog geen zzp\'er</span>'}` : '<span class="muted">Nog niet gekoppeld</span>'}</dd>
             <dt>Intake</dt><dd>${invite}</dd>
+            <dt>Projecten</dt><dd>${d.toewijzing.length ? esc(projectLabels()) : '<span class="muted">Nog niet toegewezen</span>'}</dd>
             ${row.status === 'actief' ? `<dt>Vrijgegeven</dt><dd>${R.fmtShort(String(row.released_at).slice(0, 10))} · uren van ${R.fmtShort(d.opdracht.start)} t/m ${R.fmtShort(d.opdracht.eind)}${row.release_note ? `<br><span class="muted small">Motivering: ${esc(row.release_note)}</span>` : ''}</dd>` : ''}
           </dl>
           ${ro ? '' : `<div class="row">
@@ -299,6 +301,34 @@ window.CoreticInhuur = (() => {
           ${ro ? '' : `<section class="panel panel-pad stack"><h2>Documenten opvragen</h2><p class="muted small">Stuur liever de intakelink: dan levert de zzp'er de documenten zelf aan in zijn dossier. Of kopieer dit verzoek:</p><pre class="ib-pre" data-ask>${esc(askText())}</pre><div><button class="btn small" type="button" data-copy-ask>Kopieer verzoek</button></div></section>`}
           <p class="muted small">Bewaar het dossier ${arch ? `tot minimaal ${R.fmtShort(arch)}` : '7 jaar na het einde van de opdracht'}. Bewaar geen kopie van het identiteitsbewijs. Het BSN vraag je alleen op als er een UBD-opgaaf nodig is.</p>
         </div>${saveBar()}`;
+      }
+      if (step === 'projecten') {
+        const chosen = new Map(d.toewijzing.map((x) => [x.project_id, x.activity_ids]));
+        const groups = new Map();
+        for (const p of meta.projects) {
+          const k = p.client_name || 'Intern';
+          if (!groups.has(k)) groups.set(k, []);
+          groups.get(k).push(p);
+        }
+        return `<section class="panel panel-pad stack">
+          <div class="row spread"><h2>Projecten en activiteiten</h2>${row.status === 'actief' ? '<span class="badge approved">Wijzigingen gelden direct</span>' : ''}</div>
+          <p class="muted small">Kies waarop de zzp'er uren mag schrijven. Bij vrijgeven komt hij automatisch in het team van deze projecten en ziet hij in zijn urenstaat alleen deze projecten en activiteiten, binnen de looptijd ${R.isIso(d.opdracht.start) ? `${R.fmtShort(d.opdracht.start)} t/m ${R.fmtShort(d.opdracht.eind)}` : 'van de opdracht'}. Bij afronden gaat hij weer uit het team.</p>
+          ${meta.projects.length ? [...groups.entries()].map(([client, list]) => `
+            <div class="ib-proj-group"><h3>${esc(client)}</h3>
+              ${list.map((p) => {
+                const on = chosen.has(p.id);
+                const acts = chosen.get(p.id) || [];
+                return `<div class="ib-proj${on ? ' on' : ''}">
+                  <label class="check"><input type="checkbox" data-proj="${p.id}"${on ? ' checked' : ''}${dis}> <strong>${esc(p.name)}</strong>${p.code ? ` <span class="muted small">${esc(p.code)}</span>` : ''}${p.billable ? '' : ' <span class="badge">intern</span>'}</label>
+                  ${p.activities.length ? `<div class="ib-acts" data-acts="${p.id}"${on ? '' : ' hidden'}>
+                    <span class="hint small">Activiteiten${acts.length ? '' : ' (nu alle)'}:</span>
+                    ${p.activities.map((a) => `<label class="check small"><input type="checkbox" data-act-of="${p.id}" value="${a.id}"${!acts.length || acts.includes(a.id) ? ' checked' : ''}${dis}> ${esc(a.name)}</label>`).join('')}
+                  </div>` : ''}
+                </div>`;
+              }).join('')}
+            </div>`).join('') : '<div class="notice warn">Er zijn nog geen actieve projecten. Maak eerst een project aan bij <a href="#/beheer/projecten">Beheer › Projecten</a>.</div>'}
+          ${ro ? '' : '<div class="row"><button class="btn primary" type="button" data-save-projects>Projecten opslaan</button><span class="muted small" data-proj-note></span></div>'}
+        </section>`;
       }
       if (step === 'praktijk') {
         const nx = R.nextCheck(d);
@@ -438,6 +468,14 @@ window.CoreticInhuur = (() => {
         try { const r = await ctx.api(`/onboarding/${id}/files/${b.dataset.delfile}`, { method: 'DELETE' }); updatedAt = r.updated_at; files = files.filter((f) => String(f.id) !== b.dataset.delfile); const keep = isDirty(); render(); if (keep) markDirty(); } catch (ex) { ctx.toast(ex.message, true); }
       }));
       el.querySelector('[data-save-check]')?.addEventListener('click', saveCheck);
+      el.querySelectorAll('[data-proj]').forEach((cb) => cb.addEventListener('change', () => {
+        const box = el.querySelector(`[data-acts="${cb.dataset.proj}"]`);
+        if (box) box.hidden = !cb.checked;
+        cb.closest('.ib-proj').classList.toggle('on', cb.checked);
+        const n = el.querySelector('[data-proj-note]'); if (n) n.textContent = 'Niet opgeslagen';
+      }));
+      el.querySelectorAll('[data-act-of]').forEach((cb) => cb.addEventListener('change', () => { const n = el.querySelector('[data-proj-note]'); if (n) n.textContent = 'Niet opgeslagen'; }));
+      el.querySelector('[data-save-projects]')?.addEventListener('click', saveProjects);
 
       // Toegang
       el.querySelector('[data-invite]')?.addEventListener('click', () => act(async () => {
@@ -483,6 +521,35 @@ window.CoreticInhuur = (() => {
         if (!(d.docs[key] && d.docs[key].s)) { d.docs[key] = { ...(d.docs[key] || {}), s: 'ok', d: R.todayIso() }; }
         render(); markDirty();
         ctx.toast(`${file.name} toegevoegd. Sla het dossier op om de status vast te leggen.`);
+      } catch (e) { ctx.toast(e.message, true); }
+    }
+
+    function projectLabels() {
+      return d.toewijzing.map((x) => {
+        const p = meta.projects.find((y) => y.id === x.project_id);
+        if (!p) return `project ${x.project_id} (afgesloten)`;
+        const acts = x.activity_ids.map((a) => (p.activities.find((y) => y.id === a) || {}).name).filter(Boolean);
+        return `${p.client_name ? `${p.client_name} / ` : ''}${p.name}${acts.length ? ` (${acts.join(', ')})` : ''}`;
+      }).join('; ');
+    }
+
+    async function saveProjects() {
+      const items = [];
+      for (const cb of el.querySelectorAll('[data-proj]:checked')) {
+        const pid = Number(cb.dataset.proj);
+        const acts = [...el.querySelectorAll(`[data-act-of="${pid}"]`)];
+        const on = acts.filter((a) => a.checked).map((a) => Number(a.value));
+        if (acts.length && !on.length) { ctx.toast('Kies per project minstens één activiteit', true); return; }
+        items.push({ project_id: pid, activity_ids: on.length === acts.length ? [] : on });
+      }
+      try {
+        if (isDirty() && el.querySelector('[data-p]')) await save({ quiet: true });
+        const res = await ctx.api(`/onboarding/${id}/assignments`, { method: 'PUT', body: { items, updated_at: updatedAt } });
+        d.toewijzing = res.toewijzing;
+        updatedAt = res.updated_at;
+        const f = el.querySelector('#ib-form'); if (f) delete f.dataset.dirty;
+        ctx.toast(row.status === 'actief' ? 'Projecten opgeslagen. De urenstaat van de zzp\'er is bijgewerkt.' : 'Projecten opgeslagen');
+        render();
       } catch (e) { ctx.toast(e.message, true); }
     }
 

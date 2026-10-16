@@ -1,6 +1,6 @@
 const express = require('express');
 const { query } = require('../db');
-const { hoursAccess, assertHoursAllowed, allowedOn, gateMessage } = require('../onboarding');
+const { hoursAccess, assertHoursAllowed, allowedWork, scopeFor, gateMessage } = require('../onboarding');
 const {
   ah, HttpError, isoDate, addDays, todayIso, weekRange, num, str, intParam,
 } = require('../util');
@@ -86,6 +86,23 @@ r.get('/', ah(async (req, res) => {
     for (const a of p.activities) a.used_hours = (rows.find((u) => u.activity_id === a.id) || {}).used || 0;
   }
 
+  // Ingehuurde zzp'ers zien alleen de projecten en activiteiten uit hun vrijgegeven opdracht
+  // (plus wat er in deze periode al geschreven is).
+  const access = await hoursAccess(uid);
+  const scope = scopeFor(access, start, end);
+  if (scope) {
+    const usedProjects = new Set(entries.map((e) => e.project_id));
+    for (let i = projects.length - 1; i >= 0; i -= 1) {
+      const p = projects[i];
+      const allowed = scope.get(p.id);
+      if (!allowed && !usedProjects.has(p.id)) { projects.splice(i, 1); continue; }
+      if (allowed && allowed !== 'all') {
+        const usedActs = new Set(entries.filter((e) => e.project_id === p.id).map((e) => e.activity_id));
+        p.activities = p.activities.filter((a) => allowed.has(a.id) || usedActs.has(a.id));
+      }
+    }
+  }
+
   // Regels van vorige week, zodat dezelfde project/activiteit-combinaties terugkomen.
   const recent = (await query(
     `SELECT DISTINCT project_id, activity_id FROM time_entries
@@ -103,7 +120,7 @@ r.get('/', ah(async (req, res) => {
     recent,
     weekly_hours: req.user.weekly_hours,
     // Ingehuurde zzp'ers: in welke periodes mag er geschreven worden (vrijgegeven inhuurdossiers).
-    onboarding: await hoursAccess(uid),
+    onboarding: access,
   });
 }));
 
@@ -139,7 +156,7 @@ r.put('/entry', ah(async (req, res) => {
   }
 
   // zzp'ers schrijven alleen uren binnen een vrijgegeven opdracht.
-  await assertHoursAllowed(uid, workDate);
+  await assertHoursAllowed(uid, workDate, projectId, activityId);
 
   if (!existing) {
     const linked = (await query(
@@ -180,14 +197,14 @@ r.post('/submit', ah(async (req, res) => {
   const { start, end, period } = periodRange(req.body);
   const access = await hoursAccess(req.user.id);
   if (access.required) {
-    const days = (await query(
-      `SELECT DISTINCT work_date FROM time_entries
+    const open = (await query(
+      `SELECT work_date, project_id, activity_id FROM time_entries
         WHERE user_id = $1 AND work_date BETWEEN $2 AND $3 AND status IN ('draft', 'rejected') ORDER BY work_date`,
       [req.user.id, start, end]
-    )).rows.map((x) => x.work_date);
-    const bad = days.find((d) => !allowedOn(access, d));
+    )).rows;
+    const bad = open.find((e) => !allowedWork(access, e.work_date, e.project_id, e.activity_id));
     if (bad) {
-      const err = new HttpError(403, `${gateMessage(access, bad)} Verwijder die uren voordat je indient.`);
+      const err = new HttpError(403, `${gateMessage(access, bad.work_date)} Verwijder die uren (${bad.work_date}) voordat je indient.`);
       err.code = 'ONBOARDING_REQUIRED';
       throw err;
     }

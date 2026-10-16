@@ -82,7 +82,7 @@
     contract: { og: '', prijsvorm: 'uur', vast: '', betaal: '', opzeg: '', vervanging: true, relatie: false, avg: false, zelffacturering: true, aansprak: 'opdracht', getekend: '' },
   };
   function emptyDossier() {
-    return { zzp: { ...SECTIONS.zzp }, opdracht: { ...SECTIONS.opdracht }, intake: { ...SECTIONS.intake, answers: {} }, contract: { ...SECTIONS.contract }, docs: {}, checks: [] };
+    return { zzp: { ...SECTIONS.zzp }, opdracht: { ...SECTIONS.opdracht }, intake: { ...SECTIONS.intake, answers: {} }, contract: { ...SECTIONS.contract }, docs: {}, checks: [], toewijzing: [] };
   }
   // Alleen bekende onderdelen, met standaardwaarden aangevuld.
   function normalize(data) {
@@ -101,6 +101,23 @@
       }
     }
     out.checks = Array.isArray(src.checks) ? src.checks.filter((c) => c && isIso(c.datum)).slice(-50) : [];
+    out.toewijzing = normalizeAssignments(src.toewijzing);
+    return out;
+  }
+
+  // Projecten en activiteiten waarop de zzp'er uren mag schrijven.
+  // [{ project_id, activity_ids: [] }]; een lege lijst activiteiten = alle activiteiten van het project.
+  function normalizeAssignments(list) {
+    if (!Array.isArray(list)) return [];
+    const seen = new Set();
+    const out = [];
+    for (const x of list.slice(0, 50)) {
+      const pid = Number(x && x.project_id);
+      if (!Number.isInteger(pid) || pid <= 0 || seen.has(pid)) continue;
+      seen.add(pid);
+      const acts = Array.isArray(x.activity_ids) ? [...new Set(x.activity_ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 100) : [];
+      out.push({ project_id: pid, activity_ids: acts });
+    }
     return out;
   }
 
@@ -256,6 +273,7 @@
     else if (d.opdracht.eind < d.opdracht.start) hard.push('De einddatum ligt vóór de startdatum.');
     const s = docCount(d, 'start');
     for (const x of s.open) hard.push(`Document open: ${x.t}`);
+    if (!d.toewijzing.length) hard.push('Wijs minstens één project toe (tabblad Projecten). Daarop kan de zzp\'er uren schrijven.');
     if (r.verdict === 'bad') soft.push('De risico-indicatie is hoog.');
     if (+d.opdracht.tarief > 0 && +d.opdracht.tarief < 38) soft.push('Het tarief ligt onder €38 per uur.');
     if (d.intake.answers.doorlenen === 1) soft.push('De zzp\'er werkt onder leiding van de eindklant (Wtta).');
@@ -342,7 +360,7 @@
 
   return {
     esc, isIso, todayIso, addMonths, daysUntil, fmtLong, fmtShort, money, plural,
-    Q, GROUPS, ALLQ, SCORED, DNAME, LBL, VTXT, STATUS, SECTIONS, emptyDossier, normalize,
+    Q, GROUPS, ALLQ, SCORED, DNAME, LBL, VTXT, STATUS, SECTIONS, emptyDossier, normalize, normalizeAssignments,
     WHO, DOCS, DOC_KEYS, FASE, DSTAT, applies, docState, docDone, docCount, uploadableByZzp, selfBilling,
     PC, lastCheck, nextCheck, assess, actions, releaseProblems,
     OG, OG_SHORT, contractData, contractHtml, contractChecks,
