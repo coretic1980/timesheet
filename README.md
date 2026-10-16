@@ -114,6 +114,35 @@ Laat je een zzp'er uren schrijven, dan maakt de app na goedkeuring de factuur na
 
 Op de factuur staan de verplichte gegevens van beide partijen, de vermelding "factuur uitgereikt door afnemer", de afspraak, de regels met uren en tarief, de btw en een urenspecificatie per dag. Rapportage toont per project de kosten van zzp'ers en de marge. De accountant ziet de zelffacturen onder Controle › Facturen, met signaleringen voor zzp-uren die na 45 dagen nog niet zijn afgerekend, uren zonder inkooptarief en facturen met bezwaar of zonder akkoord.
 
+## Inhuur van zzp'ers (Wet DBA)
+
+Onder **Inhuur** leg je per opdracht een dossier aan waarmee je bij een controle van de Belastingdienst laat zien dat de zzp'er als zelfstandige werkt. Een ingehuurde zzp'er kan **pas uren schrijven als zijn dossier is vrijgegeven**, en alleen binnen de looptijd van de opdracht.
+
+**Zo werkt het**
+1. **Nieuwe zzp'er:** maak een dossier aan met naam en e-mail.
+2. **Intakelink:** stuur de zzp'er de persoonlijke link (30 dagen geldig, zonder account). Hij vult zijn bedrijfsgegevens, tarief en de vragen over gezag, inbedding en ondernemerschap in, levert documenten aan (pdf, png of jpg, max. 5 MB) en dient de intake in. Notities en de risico-indicatie ziet hij niet.
+3. **Intake:** jij loopt de antwoorden na. Rechts staat de risico-indicatie per criterium, met aandachtspunten zoals een tarief onder €38 of doorlenen onder leiding van de klant (Wtta).
+4. **Overeenkomst:** wordt opgebouwd uit het dossier, met vrije vervanging, eindklant, relatiebeding, verwerkersovereenkomst en zelffacturering als opties. Open hem om af te drukken of als pdf te bewaren, en vul de tekendatum in.
+5. **Documenten:** de lijst past zich aan de situatie aan (eindklant, KOR, persoonsgegevens, zelffacturering). Per document een status, datum en de bestanden.
+6. **Account:** maak vanuit het dossier het account aan, of koppel een bestaand account. **Zzp-gegevens overnemen** vult de leveranciersgegevens voor de zelffactuur (bedrijfsnaam, adres, KvK, btw, KOR, inkooptarief en datum akkoord zelffacturering).
+7. **Vrijgeven voor uren:** kan pas als de intake compleet en bevestigd is, de overeenkomst getekend, de startdocumenten binnen en start- en einddatum ingevuld. Bij een hoge risico-indicatie, een tarief onder €38 of doorlenen moet je een motivering vastleggen. Die komt in het logboek en in het dossier.
+8. **Praktijkcheck:** elk half jaar zeven vragen over hoe het werk echt gaat. Het overzicht waarschuwt als een check eraan komt of verlopen is.
+9. **Afronden:** zet het dossier op Afgerond als de opdracht klaar is. De zzp'er kan dan geen uren meer schrijven.
+
+**Urenblokkade**
+- Geldt alleen voor gebruikers die als ingehuurde zzp'er staan (Beheer › Medewerkers). Medewerkers en beheerders merken er niets van.
+- De server weigert uren buiten een vrijgegeven opdracht, ook bij indienen. De zzp'er ziet in de urenstaat waarom.
+- **Let op bij de eerste deploy:** zzp'ers die nu al uren schrijven, kunnen dat pas weer als hun dossier is vrijgegeven. Ze staan bovenaan in Inhuur › Te doen. Wil je eerst de dossiers op orde brengen, zet de blokkade dan tijdelijk uit bij Inhuur › Instellingen.
+
+**Verder**
+- Het tabblad **Advies en documenten** bevat de documentenkaart, de tijdlijn (Wet DBA, Wtta, Zelfstandigenwet) en aandachtspunten.
+- **Dossier afdrukken** geeft het complete dossier inclusief overeenkomst, documentenlijst en praktijkchecks.
+- De accountant kan alles inzien en afdrukken, maar niets wijzigen. Alle stappen staan in het logboek onder "Inhuur zzp'ers".
+- Op het Overzicht staat een tegel met het aantal urgente punten.
+- De regels (vragen, documenten, risico-indicatie, overeenkomst) staan in `public/onboarding-rules.js` en gelden voor zowel de server als de browser.
+
+Dit is een hulpmiddel, geen juridisch advies. Laat de overeenkomst één keer toetsen door je belastingadviseur.
+
 ## Installatie
 
 ### 1. Database (Neon)
@@ -240,5 +269,11 @@ src/routes/approvals.js  goedkeuren, afkeuren, terugzetten
 src/routes/invoicing.js  factuurvoorbeeld en aanmaken in e-Boekhouden
 src/routes/reports.js    bezetting, budget, CSV
 src/routes/admin.js      medewerkers, klanten, projecten, koppeling
+src/routes/onboarding.js inhuurdossiers, vrijgeven, bestanden, overeenkomst
+src/routes/intake-public.js  intake voor de zzp'er via de persoonlijke link
+src/onboarding.js        urenblokkade, intakelinks, bestanden, printbare documenten
 public/                  frontend (index.html, app.js, styles.css)
+public/onboarding-rules.js  regels voor inhuur, gedeeld door server en browser
+public/inhuur.js         scherm Inhuur
+public/intake.html/.js   intakepagina voor de zzp'er
 ```

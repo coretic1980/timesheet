@@ -49,10 +49,21 @@ app.use('/api/reports', requireRole('admin', 'accountant'), enforceMfaSetup, req
 // Zelffacturen voor ingehuurde zzp'ers; de rechten per actie staan in de router.
 app.use('/api/self-billing', requireAuth, enforceMfaSetup, require('./routes/selfbilling'));
 app.use('/api/accountant', requireRole('admin', 'accountant'), enforceMfaSetup, require('./routes/accountant'));
+// Inhuur van zzp'ers (dossiers); de accountant kan meekijken.
+app.use('/api/onboarding', requireRole('admin', 'accountant'), enforceMfaSetup, require('./routes/onboarding'));
+// Intake voor de zzp'er via de persoonlijke link, zonder account.
+app.use('/api/public/intake', require('./routes/intake-public'));
 app.use('/api', (req, res, next) => next(new HttpError(404, 'Onbekend endpoint')));
 
 // Altijd laten controleren of er een nieuwe versie is (ETag), zodat een deploy direct zichtbaar is.
 const noCache = (res) => res.setHeader('Cache-Control', 'no-cache');
+// Intakepagina voor de zzp'er; het token in de link wordt niet doorgegeven aan andere sites.
+app.get('/intake/:token', (req, res) => {
+  noCache(res);
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Robots-Tag', 'noindex');
+  res.sendFile(path.join(__dirname, '..', 'public', 'intake.html'));
+});
 app.use(express.static(path.join(__dirname, '..', 'public'), { index: 'index.html', setHeaders: noCache }));
 app.get('*', (req, res) => {
   noCache(res);

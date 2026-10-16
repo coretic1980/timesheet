@@ -203,3 +203,39 @@ CREATE INDEX IF NOT EXISTS self_bills_user_idx ON self_bills(user_id);
 ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS cost_rate NUMERIC(10,2);
 ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS self_bill_id INT REFERENCES self_bills(id);
 CREATE INDEX IF NOT EXISTS time_entries_self_bill_idx ON time_entries(self_bill_id);
+
+-- Inhuur van zzp'ers: dossier per opdracht (intake, overeenkomst, documenten, praktijkchecks).
+-- Een zzp'er kan pas uren schrijven als een gekoppeld dossier is vrijgegeven (status 'actief'),
+-- en alleen binnen de looptijd van die opdracht.
+CREATE TABLE IF NOT EXISTS onboarding_dossiers (
+  id             SERIAL PRIMARY KEY,
+  user_id        INT REFERENCES users(id) ON DELETE SET NULL,
+  status         TEXT NOT NULL DEFAULT 'intake'
+                 CHECK (status IN ('intake', 'contract', 'actief', 'afgerond', 'afgewezen')),
+  data           JSONB NOT NULL DEFAULT '{}'::jsonb,
+  invite_hash    TEXT UNIQUE,                 -- sha256 van het token in de intakelink
+  invite_expires TIMESTAMPTZ,
+  invited_at     TIMESTAMPTZ,
+  submitted_at   TIMESTAMPTZ,                 -- intake ingediend door de zzp'er
+  released_at    TIMESTAMPTZ,                 -- vrijgegeven voor urenregistratie
+  released_by    INT REFERENCES users(id),
+  release_note   TEXT,                        -- motivering als er bewust van een waarschuwing is afgeweken
+  created_by     INT REFERENCES users(id),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS onboarding_dossiers_user_idx ON onboarding_dossiers(user_id);
+
+-- Documenten bij een dossier (pdf of foto), aangeleverd door de zzp'er via de intakelink of door de beheerder.
+CREATE TABLE IF NOT EXISTS onboarding_files (
+  id          SERIAL PRIMARY KEY,
+  dossier_id  INT NOT NULL REFERENCES onboarding_dossiers(id) ON DELETE CASCADE,
+  doc_key     TEXT NOT NULL,
+  filename    TEXT NOT NULL,
+  mime        TEXT NOT NULL,
+  size        INT NOT NULL,
+  content     BYTEA NOT NULL,
+  uploaded_by INT REFERENCES users(id),      -- NULL = de zzp'er via de intakelink
+  uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS onboarding_files_dossier_idx ON onboarding_files(dossier_id);
