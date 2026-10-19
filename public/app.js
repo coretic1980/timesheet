@@ -993,6 +993,7 @@
       if (e.target.matches('.le-desc-input, .dv-desc')) autoGrow(e.target);
     });
     view.addEventListener('keydown', (e) => {
+      if (e.target.matches('input.hrs') && cellClipboardKey(view, e)) return;
       if (e.target.matches('input.hrs') && e.key === 'Enter') {
         e.preventDefault();
         const date = e.target.dataset.date;
@@ -1049,6 +1050,8 @@
     view.addEventListener('click', (e) => {
       const note = e.target.closest('button.note');
       if (note) openNote(view, note.closest('tr').dataset.row, note.dataset.date);
+      const cm = e.target.closest('[data-cellmenu]');
+      if (cm) openCellMenu(view, cm.closest('tr').dataset.row, cm.dataset.cellmenu, cm);
       const act = e.target.closest('[data-sheet-action]');
       if (act) sheetAction(view, act.dataset.sheetAction);
       const per = e.target.closest('[data-sheet-period]');
@@ -1158,6 +1161,7 @@
               aria-label="Omschrijving bij ${esc(label)}, ${DAYS_LONG[dow(d)]}"
               title="${esc((e && e.description) || 'Omschrijving toevoegen')}"></button>
             <span class="grip" aria-hidden="true" title="Sleep naar een andere dag (Ctrl of ⌥ om te kopiëren)"></span>
+            <button type="button" class="cellmenu" data-cellmenu="${d}" aria-label="Kopiëren of verplaatsen: ${esc(label)}, ${DAYS_LONG[dow(d)]}" title="Kopiëren of verplaatsen"></button>
           </td>`;
       }).join('');
       return `
@@ -1199,7 +1203,7 @@
       </div>
       ${canAdd ? '<div class="add-row-bar"><button class="btn" type="button" data-add-row>Regel toevoegen</button></div>' : ''}
       <div class="legend">${LEGEND}
-        <span>Tip: 7:30 wordt 7,5 uur. Enter springt naar de volgende regel. Sleep een vak aan ⠿ naar een andere dag; met Ctrl of ⌥ kopieer je.</span>
+        <span>Tip: 7:30 wordt 7,5 uur. Enter springt naar de volgende regel. Kopiëren of verplaatsen: klik op ⋯ in een vak, gebruik Ctrl+C / Ctrl+X en Ctrl+V, of sleep een vak aan ⠿ (met Ctrl of ⌥ kopieer je).</span>
       </div>`;
   }
 
@@ -1852,6 +1856,131 @@
       toast(e.message, true);
       refreshSheetChrome(view);
     }
+  }
+
+  /* Snel kopiëren of verplaatsen: menu per vak en Ctrl+C / Ctrl+X / Ctrl+V */
+
+  const editableEntry = (rk, date) => {
+    const { pid, aid } = parseKey(rk);
+    const e = state.sheet.map.get(cellKey(pid, aid, date));
+    return e && EDITABLE.includes(e.status) ? e : null;
+  };
+  const cellFree = (view, rk, date) => {
+    const td = cellAt(view, rk, date);
+    return td && !td.querySelector('input.hrs').disabled;
+  };
+
+  // Kopieer naar meerdere dagen; dagen waar al uren staan worden overgeslagen.
+  async function copyToDays(view, rk, fromDate, dates) {
+    const src = editableEntry(rk, fromDate);
+    if (!src) return;
+    const { pid, aid } = parseKey(rk);
+    let done = 0;
+    let skipped = 0;
+    for (const d of dates) {
+      if (d === fromDate || !cellFree(view, rk, d) || state.sheet.map.get(cellKey(pid, aid, d))) { skipped += 1; continue; }
+      try {
+        const { res } = await addToCell(pid, aid, d, src.hours, src.description);
+        updateCellUI(view, rk, d, res);
+        done += 1;
+      } catch (ex) { toast(ex.message, true); break; }
+    }
+    refreshSheetChrome(view);
+    toast(`${fh(src.hours)} uur gekopieerd naar ${done} ${done === 1 ? 'dag' : 'dagen'}${skipped ? ` (${skipped} overgeslagen: al gevuld of gesloten)` : ''}`);
+  }
+
+  function closeCellMenu() {
+    document.querySelector('.cell-pop')?.remove();
+    document.querySelectorAll('.cellmenu[aria-expanded="true"]').forEach((b) => b.setAttribute('aria-expanded', 'false'));
+  }
+
+  function openCellMenu(view, rk, date, btn) {
+    closeCellMenu();
+    const src = editableEntry(rk, date);
+    if (!src) { toast('Vul eerst uren in, dan kun je ze kopiëren of verplaatsen'); return; }
+    // Dagen uit dezelfde week (ook in de maandweergave), binnen de getoonde periode.
+    const ws = weekStart(date);
+    const week = [0, 1, 2, 3, 4, 5, 6].map((i) => addDays(ws, i)).filter((d) => state.sheet.days.includes(d));
+    const workdays = week.filter((d) => dow(d) < 5 && d !== date);
+    const dayBtn = (mode, d) => {
+      const self = d === date;
+      const ok = !self && cellFree(view, rk, d);
+      const has = state.sheet.map.get(cellKey(parseKey(rk).pid, parseKey(rk).aid, d));
+      return `<button type="button" class="day-pick${has ? ' has' : ''}" data-mode="${mode}" data-to="${d}"${ok ? '' : ' disabled'}
+        title="${esc(dayLabel(d))}${has ? `, er staat al ${fh(has.hours)} uur` : ''}"><span>${DAYS[dow(d)]}</span><strong>${Number(d.slice(8))}</strong></button>`;
+    };
+    const pop = document.createElement('div');
+    pop.className = 'cell-pop';
+    pop.setAttribute('role', 'dialog');
+    pop.setAttribute('aria-label', 'Kopiëren of verplaatsen');
+    pop.innerHTML = `
+      <p class="cp-title"><strong>${fh(src.hours)} uur</strong> · ${esc(dayLabel(date))}</p>
+      <p class="cp-label">Kopiëren naar</p>
+      <div class="cp-days">${week.map((d) => dayBtn('copy', d)).join('')}</div>
+      ${workdays.length > 1 ? `<button type="button" class="btn small cp-all" data-mode="copy-all">Naar alle werkdagen van deze week</button>` : ''}
+      <p class="cp-label">Verplaatsen naar</p>
+      <div class="cp-days">${week.map((d) => dayBtn('move', d)).join('')}</div>
+      <p class="cp-hint muted small">Staat er al iets, dan worden de uren opgeteld. Sneltoetsen: Ctrl+C of Ctrl+X in een vak, daarna Ctrl+V in een ander vak.</p>`;
+    document.body.appendChild(pop);
+    btn.setAttribute('aria-expanded', 'true');
+    // Plaatsen onder het vak, binnen het scherm.
+    const r = btn.closest('td').getBoundingClientRect();
+    const pw = pop.offsetWidth;
+    const ph = pop.offsetHeight;
+    let left = Math.min(Math.max(8, r.left + r.width / 2 - pw / 2), window.innerWidth - pw - 8);
+    let top = r.bottom + 6;
+    if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 6);
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+    pop.querySelector('.day-pick:not(:disabled)')?.focus();
+    pop.addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-mode]');
+      if (!b || b.disabled) return;
+      closeCellMenu();
+      if (b.dataset.mode === 'copy-all') await copyToDays(view, rk, date, workdays);
+      else await dropEntry(view, rk, date, rk, b.dataset.to, b.dataset.mode === 'copy');
+      cellAt(view, rk, b.dataset.to || date)?.querySelector('input.hrs')?.focus();
+    });
+  }
+  document.addEventListener('click', (e) => { if (!e.target.closest('.cell-pop, [data-cellmenu]')) closeCellMenu(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeCellMenu(); });
+  window.addEventListener('scroll', closeCellMenu, { passive: true });
+  window.addEventListener('hashchange', () => { closeCellMenu(); state.cellClip = null; });
+
+  // Ctrl/⌘+C of X in een vak onthoudt het vak; Ctrl/⌘+V in een ander vak plakt (X = verplaatsen).
+  function cellClipboardKey(view, e) {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return false;
+    const k = e.key.toLowerCase();
+    const input = e.target;
+    const rk = input.closest('tr').dataset.row;
+    const date = input.dataset.date;
+    const clearMark = () => view.querySelectorAll('td.cell.clip').forEach((td) => td.classList.remove('clip', 'clip-cut'));
+    if (k === 'c' || k === 'x') {
+      // Tijdens typen (deel van de tekst geselecteerd) gewoon de normale tekst-actie.
+      const all = input.selectionStart === 0 && input.selectionEnd === input.value.length;
+      const src = editableEntry(rk, date);
+      if (!src || !all || String(input.value).trim() !== fmtInput(src.hours)) return false;
+      state.cellClip = { rk, date, cut: k === 'x' };
+      clearMark();
+      input.closest('td').classList.add('clip', ...(k === 'x' ? ['clip-cut'] : []));
+      if (k === 'x') e.preventDefault();
+      toast(`${fh(src.hours)} uur ${k === 'x' ? 'geknipt' : 'gekopieerd'}. Ga naar een ander vak en druk Ctrl+V.`);
+      return true;
+    }
+    if (k === 'v' && state.cellClip) {
+      const clip = state.cellClip;
+      if (clip.rk === rk && clip.date === date) return false;
+      if (!editableEntry(clip.rk, clip.date)) { state.cellClip = null; clearMark(); return false; }
+      e.preventDefault();
+      if (clip.cut) { state.cellClip = null; clearMark(); }
+      dropEntry(view, clip.rk, clip.date, rk, date, !clip.cut).then(() => {
+        const td = cellAt(view, rk, date);
+        td?.querySelector('input.hrs')?.select();
+      });
+      return true;
+    }
+    if (e.key === 'Escape') { state.cellClip = null; clearMark(); }
+    return false;
   }
 
   function openNote(view, rk, date) {
