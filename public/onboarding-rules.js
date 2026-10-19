@@ -290,7 +290,7 @@
     const z = d.zzp;
     const og = OG[c.og] ? c.og : (OG[S.og] ? S.og : 'dvn');
     return {
-      og, ogKvk: og === 'cor' ? S.corKvk : S.dvnKvk, ogPlaats: S.ogPlaats, ogAdres: S.ogAdres, ogRep: S.ogRep,
+      og, ogKvk: og === 'cor' ? S.corKvk : S.dvnKvk, ogBtw: og === 'cor' ? S.corBtw : S.dvnBtw, ogPlaats: S.ogPlaats, ogAdres: S.ogAdres, ogRep: S.ogRep,
       onNaam: z.naam, onBedrijf: z.bedrijf, onKvk: z.kvk, onBtw: z.btw, onAdres: z.adres,
       resultaat: o.resultaat, klant: o.klant, start: o.start, eind: o.eind, uren: o.uren,
       prijsvorm: c.prijsvorm === 'vast' ? 'vast' : 'uur', bedrag: c.prijsvorm === 'vast' ? c.vast : o.tarief,
@@ -312,7 +312,7 @@
     const art = (t, body) => `<h3>Artikel ${++n}. ${t}</h3>${body}`;
     let h = `<h1>Overeenkomst van opdracht</h1><p class="psub">Kenmerk ${esc(s.kenmerk)}</p>
     <p><b>De ondergetekenden</b></p>
-    <p>1. ${OG[s.og]}, gevestigd te ${v(s.ogPlaats, 'plaats')}${s.ogAdres ? `, ${esc(s.ogAdres)}` : ''}, ingeschreven bij de Kamer van Koophandel onder nummer ${v(s.ogKvk, 'KvK opdrachtgever')}, rechtsgeldig vertegenwoordigd door ${v(s.ogRep, 'vertegenwoordiger')}, hierna: <b>Opdrachtgever</b>;</p>
+    <p>1. ${OG[s.og]}, gevestigd te ${v(s.ogPlaats, 'plaats')}${s.ogAdres ? `, ${esc(s.ogAdres)}` : ''}, ingeschreven bij de Kamer van Koophandel onder nummer ${v(s.ogKvk, 'KvK opdrachtgever')}${s.ogBtw ? `, btw-identificatienummer ${esc(s.ogBtw)}` : ''}, rechtsgeldig vertegenwoordigd door ${v(s.ogRep, 'vertegenwoordiger')}, hierna: <b>Opdrachtgever</b>;</p>
     <p>2. ${v(s.onBedrijf, 'bedrijfsnaam opdrachtnemer')}, ${s.onAdres ? esc(s.onAdres) : '<mark>adres</mark>'}, ingeschreven bij de Kamer van Koophandel onder nummer ${v(s.onKvk, 'KvK opdrachtnemer')}, btw-identificatienummer ${v(s.onBtw, 'btw-id')}, rechtsgeldig vertegenwoordigd door ${v(s.onNaam, 'naam')}, hierna: <b>Opdrachtnemer</b>;</p>
     <p><b>Overwegende dat</b></p>
     <p>Opdrachtnemer een zelfstandige onderneming drijft, voor eigen rekening en risico werkt en zijn diensten aan meerdere opdrachtgevers aanbiedt; Opdrachtgever een afgebakend resultaat wil laten realiseren waarvoor Opdrachtnemer de specialistische kennis heeft; partijen uitdrukkelijk geen arbeidsovereenkomst willen sluiten en ook in de praktijk niet zo zullen werken;</p>

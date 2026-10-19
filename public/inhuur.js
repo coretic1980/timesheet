@@ -126,7 +126,9 @@ window.CoreticInhuur = (() => {
             <option value="dvn"${s.og !== 'cor' ? ' selected' : ''}>DVN Technology B.V. (Coretic)</option>
             <option value="cor"${s.og === 'cor' ? ' selected' : ''}>Coretic B.V.</option></select></label>
           <label class="field">KvK DVN Technology B.V.<input name="dvnKvk" value="${esc(s.dvnKvk)}" inputmode="numeric" maxlength="20"></label>
+          <label class="field">Btw-id DVN Technology B.V.<input name="dvnBtw" value="${esc(s.dvnBtw)}" maxlength="30"></label>
           <label class="field">KvK Coretic B.V.<span class="hint">Na inschrijving van de werkmaatschappij</span><input name="corKvk" value="${esc(s.corKvk)}" inputmode="numeric" maxlength="20"></label>
+          <label class="field">Btw-id Coretic B.V.<input name="corBtw" value="${esc(s.corBtw)}" maxlength="30"></label>
           <label class="field">Adres<input name="ogAdres" value="${esc(s.ogAdres)}" maxlength="200"></label>
           <label class="field">Vestigingsplaats<input name="ogPlaats" value="${esc(s.ogPlaats)}" maxlength="100"></label>
           <label class="field">Vertegenwoordigd door<input name="ogRep" value="${esc(s.ogRep)}" maxlength="120" placeholder="Naam, directeur"></label>
@@ -134,7 +136,7 @@ window.CoreticInhuur = (() => {
           <label class="field">Opzegtermijn (dagen)<input name="opzeg" value="${esc(s.opzeg)}" inputmode="numeric"></label>
         </div>`,
       onSubmit: async (fd) => {
-        const body = Object.fromEntries(['og', 'dvnKvk', 'corKvk', 'ogAdres', 'ogPlaats', 'ogRep', 'betaal', 'opzeg'].map((k) => [k, fd.get(k)]));
+        const body = Object.fromEntries(['og', 'dvnKvk', 'dvnBtw', 'corKvk', 'corBtw', 'ogAdres', 'ogPlaats', 'ogRep', 'betaal', 'opzeg'].map((k) => [k, fd.get(k)]));
         body.enforce = fd.get('enforce') === 'on';
         await ctx.api('/onboarding/settings', { method: 'PUT', body });
         ctx.toast('Instellingen opgeslagen');

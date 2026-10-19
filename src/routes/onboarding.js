@@ -95,6 +95,8 @@ r.put('/settings', ah(async (req, res) => {
     og: b.og === 'cor' ? 'cor' : 'dvn',
     dvnKvk: str(b.dvnKvk, { name: 'KvK DVN Technology', max: 20, required: false }),
     corKvk: str(b.corKvk, { name: 'KvK Coretic', max: 20, required: false }),
+    dvnBtw: str(b.dvnBtw, { name: 'Btw-id DVN Technology', max: 30, required: false }),
+    corBtw: str(b.corBtw, { name: 'Btw-id Coretic', max: 30, required: false }),
     ogAdres: str(b.ogAdres, { name: 'Adres', max: 200, required: false }),
     ogPlaats: str(b.ogPlaats, { name: 'Plaats', max: 100, required: false }),
     ogRep: str(b.ogRep, { name: 'Vertegenwoordiger', max: 120, required: false }),

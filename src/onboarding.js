@@ -9,7 +9,9 @@ const R = require('../public/onboarding-rules');
 const ONB_DEFAULTS = {
   enforce: true,     // zzp'ers zonder vrijgegeven dossier kunnen geen uren schrijven
   og: 'dvn',         // contracterende partij: dvn = DVN Technology B.V. h.o.d.n. Coretic, cor = Coretic B.V.
-  dvnKvk: '',
+  dvnKvk: '99083523',          // DVN Technology B.V.
+  dvnBtw: 'NL868787255B01',
+  corBtw: '',
   corKvk: '',
   ogAdres: '',
   ogPlaats: '',
@@ -21,6 +23,7 @@ const ONB_DEFAULTS = {
 async function getOnboardingSettings() {
   const { rows } = await query(`SELECT value FROM settings WHERE key = 'onboarding'`);
   const s = { ...ONB_DEFAULTS, ...(rows[0] ? rows[0].value : {}) };
+  for (const k of ['dvnKvk', 'dvnBtw']) if (!s[k]) s[k] = ONB_DEFAULTS[k];
   // Lege velden aanvullen met de bedrijfsgegevens uit de zelffacturering.
   if (!s.dvnKvk || !s.ogAdres || !s.ogPlaats) {
     const sb = await getSelfBillSettings();
