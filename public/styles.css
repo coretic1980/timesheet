@@ -1185,3 +1185,8 @@ body.intake-page { background: var(--paper); }
 .idoc-files { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.25rem; font-size: 0.92rem; }
 .idoc-files li { display: flex; justify-content: space-between; gap: 0.5rem; align-items: center; overflow-wrap: anywhere; }
 .idoc-up { justify-self: start; }
+
+/* Drie filters (klant, project, activiteit) naast elkaar */
+@media (min-width: 761px) {
+  .sheet-filter .ms-button { width: 15rem; }
+}

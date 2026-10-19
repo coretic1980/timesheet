@@ -33,7 +33,7 @@ r.get('/', ah(async (req, res) => {
   const uid = req.user.id;
 
   const projects = (await query(
-    `SELECT p.id, p.name, p.code, p.billable, p.active, p.budget_hours, c.name AS client_name,
+    `SELECT p.id, p.name, p.code, p.billable, p.active, p.budget_hours, p.client_id, c.name AS client_name,
             EXISTS (SELECT 1 FROM assignments a WHERE a.project_id = p.id AND a.user_id = $1) AS assigned
        FROM projects p LEFT JOIN clients c ON c.id = p.client_id
       WHERE (p.active AND EXISTS (SELECT 1 FROM assignments a WHERE a.project_id = p.id AND a.user_id = $1))

@@ -2,7 +2,7 @@
   'use strict';
 
   const app = document.getElementById('app');
-  const state = { user: null, pendingCount: 0, sheet: null, extraRows: {}, sheetFilter: { projects: [], activities: [], onlyHours: false }, filterOpen: false, invoicePeriod: null, reportPeriod: null };
+  const state = { user: null, pendingCount: 0, sheet: null, extraRows: {}, sheetFilter: { clients: [], projects: [], activities: [], onlyHours: false }, filterOpen: false, invoicePeriod: null, reportPeriod: null };
 
   /* ================= Hulpfuncties ================= */
 
@@ -754,38 +754,51 @@
       <span class="bmini-left">${leftText}</span></div>`;
   }
 
-  // Filter op projecten en/of activiteiten (meervoudig; activiteit werkt ook over projecten heen).
+  // Filter op klanten, projecten en/of activiteiten (meervoudig; activiteit werkt ook over projecten heen).
+  // Klant 0 = intern (projecten zonder klant).
+  const clientKey = (r) => r.project.client_id || 0;
+  const FILTER_KINDS = ['clients', 'projects', 'activities'];
   function filterActive() {
     const f = state.sheetFilter;
-    return Boolean(f.projects.length || f.activities.length || f.onlyHours);
+    return Boolean(f.clients.length || f.projects.length || f.activities.length || f.onlyHours);
   }
   const rowHasHours = (data, r) => data.days.some((d) => data.map.has(cellKey(r.pid, r.aid, d)));
   function visibleRows(data) {
     const f = state.sheetFilter;
-    return sheetRows(data).filter((r) => (!f.projects.length || f.projects.includes(r.pid))
+    return sheetRows(data).filter((r) => (!f.clients.length || f.clients.includes(clientKey(r)))
+      && (!f.projects.length || f.projects.includes(r.pid))
       && (!f.activities.length || f.activities.includes(r.aid))
       && (!f.onlyHours || rowHasHours(data, r)));
   }
 
-  // Keuzes per filter: projecten uit alle regels, activiteiten uit de regels van de gekozen projecten.
+  // Keuzes per filter: klanten uit alle regels, projecten van de gekozen klanten,
+  // activiteiten van de gekozen klanten en projecten.
   function filterOptions(kind, data) {
     const all = sheetRows(data);
     const f = state.sheetFilter;
     const out = new Map();
     for (const r of all) {
-      if (kind === 'projects') {
-        if (!out.has(r.pid)) out.set(r.pid, `${r.project.client_name || 'Intern'} / ${r.project.name}`);
-      } else if (r.activity && (!f.projects.length || f.projects.includes(r.pid))) {
+      const clientOk = !f.clients.length || f.clients.includes(clientKey(r));
+      if (kind === 'clients') {
+        if (!out.has(clientKey(r))) out.set(clientKey(r), r.project.client_name || 'Intern');
+      } else if (kind === 'projects') {
+        if (clientOk && !out.has(r.pid)) out.set(r.pid, `${r.project.client_name || 'Intern'} / ${r.project.name}`);
+      } else if (r.activity && clientOk && (!f.projects.length || f.projects.includes(r.pid))) {
         out.set(r.activity.id, r.activity.name);
       }
     }
     return [...out.entries()].map(([id, label]) => ({ id, label }))
-      .sort((x, y) => x.label.localeCompare(y.label, 'nl'));
+      // Intern achteraan, verder op naam.
+      .sort((x, y) => (kind === 'clients' ? (x.id === 0) - (y.id === 0) : 0) || x.label.localeCompare(y.label, 'nl'));
   }
 
   function msText(kind, data) {
     const sel = state.sheetFilter[kind];
-    const word = kind === 'projects' ? ['Alle projecten', 'project', 'projecten'] : ['Alle activiteiten', 'activiteit', 'activiteiten'];
+    const word = {
+      clients: ['Alle klanten', 'klant', 'klanten'],
+      projects: ['Alle projecten', 'project', 'projecten'],
+      activities: ['Alle activiteiten', 'activiteit', 'activiteiten'],
+    }[kind];
     if (!sel.length) return word[0];
     if (sel.length === 1) {
       const o = filterOptions(kind, data).find((x) => x.id === sel[0]);
@@ -832,6 +845,7 @@
     if (sheetRows(data).length < 2 && !filterActive()) return '';
     return `
       <div class="sheet-filter${state.filterOpen ? ' open' : ''}">
+        ${msHTML('clients', 'Klant', data)}
         ${msHTML('projects', 'Project', data)}
         ${msHTML('activities', 'Activiteit', data)}
         <label class="check only-hours"><input type="checkbox" data-only-hours${state.sheetFilter.onlyHours ? ' checked' : ''}> Alleen regels met uren</label>
@@ -852,13 +866,16 @@
   // Filter toepassen zonder de filterbalk opnieuw op te bouwen, zodat een open menu open blijft.
   function applyFilter(view, changedKind) {
     const data = state.sheet;
-    if (changedKind === 'projects') {
-      const allowed = new Set(filterOptions('activities', data).map((o) => o.id));
-      state.sheetFilter.activities = state.sheetFilter.activities.filter((id) => allowed.has(id));
-      const box = view.querySelector('[data-ms="activities"] .ms-options');
-      if (box) box.innerHTML = msOptionsHTML('activities', data);
-    }
-    for (const kind of ['projects', 'activities']) {
+    // Keuzes verderop in de keten bijwerken: klant > project > activiteit.
+    const narrow = (kind) => {
+      const allowed = new Set(filterOptions(kind, data).map((o) => o.id));
+      state.sheetFilter[kind] = state.sheetFilter[kind].filter((id) => allowed.has(id));
+      const box = view.querySelector(`[data-ms="${kind}"] .ms-options`);
+      if (box) box.innerHTML = msOptionsHTML(kind, data);
+    };
+    if (changedKind === 'clients') narrow('projects');
+    if (changedKind === 'clients' || changedKind === 'projects') narrow('activities');
+    for (const kind of FILTER_KINDS) {
       const t = view.querySelector(`[data-ms="${kind}"] [data-ms-text]`);
       if (t) t.textContent = msText(kind, data);
       view.querySelector(`[data-ms="${kind}"]`)?.classList.toggle('active', state.sheetFilter[kind].length > 0);
@@ -894,7 +911,7 @@
         applyFilter(view, kind);
       }
       if (e.target.closest('[data-filter-clear]')) {
-        state.sheetFilter = { projects: [], activities: [], onlyHours: false };
+        state.sheetFilter = { clients: [], projects: [], activities: [], onlyHours: false };
         renderSheetBody(view);
       }
       if (e.target.closest('[data-filter-toggle]')) {
@@ -1072,7 +1089,7 @@
   function renderSheetBody(view) {
     const body = view.querySelector('#sheet-body');
     body.innerHTML = `${filterHTML(state.sheet)}<div id="sheet-content"></div>`;
-    for (const kind of ['projects', 'activities']) {
+    for (const kind of FILTER_KINDS) {
       view.querySelector(`[data-ms="${kind}"]`)?.classList.toggle('active', state.sheetFilter[kind].length > 0);
     }
     renderSheetContent(view);
@@ -1599,7 +1616,7 @@
     const word = month ? 'maand' : 'week';
     const mode = effectiveMode();
     const pct = contract ? Math.min(100, (total / contract) * 100) : 0;
-    const nFilter = state.sheetFilter.projects.length + state.sheetFilter.activities.length + (state.sheetFilter.onlyHours ? 1 : 0);
+    const nFilter = state.sheetFilter.clients.length + state.sheetFilter.projects.length + state.sheetFilter.activities.length + (state.sheetFilter.onlyHours ? 1 : 0);
     const modeBtn = (k, lbl, cls) => `<button type="button" class="${cls}" data-sheet-mode="${k}" aria-pressed="${mode === k}">${lbl}</button>`;
     return `
       <div class="sheet-head">
