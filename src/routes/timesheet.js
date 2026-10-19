@@ -7,7 +7,7 @@ const {
 
 const r = express.Router();
 
-const ENTRY_COLS = 'id, project_id, activity_id, work_date, hours, description, status, rejection_reason';
+const ENTRY_COLS = 'id, project_id, activity_id, work_date, hours, description, internal_note, status, rejection_reason';
 
 // Periode uit query/body: { month: 'jjjj-mm' } voor een maand, anders { week: datum } voor een week.
 function periodRange(src) {
@@ -133,6 +133,9 @@ r.put('/entry', ah(async (req, res) => {
     min: 0, max: 24, name: 'aantal uren',
   });
   const description = str(req.body.description, { name: 'Omschrijving', max: 1000, required: false });
+  // Interne notitie: alleen wijzigen als die is meegestuurd (anders blijft de bestaande staan).
+  const noteGiven = req.body.internal_note !== undefined;
+  const note = noteGiven ? (str(req.body.internal_note, { name: 'Interne notitie', max: 1000, required: false }) || null) : null;
 
   const assigned = await query(
     `SELECT 1 FROM projects p JOIN assignments a ON a.project_id = p.id AND a.user_id = $2
@@ -180,14 +183,15 @@ r.put('/entry', ah(async (req, res) => {
   if (dayTotal + hours > 24) throw new HttpError(400, 'Meer dan 24 uur op één dag kan niet');
 
   const { rows } = await query(
-    `INSERT INTO time_entries (user_id, project_id, activity_id, work_date, hours, description)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO time_entries (user_id, project_id, activity_id, work_date, hours, description, internal_note)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::text)
      ON CONFLICT (user_id, project_id, (COALESCE(activity_id, 0)), work_date) DO UPDATE
         SET hours = EXCLUDED.hours, description = EXCLUDED.description,
+            internal_note = CASE WHEN $8::boolean THEN EXCLUDED.internal_note ELSE time_entries.internal_note END,
             status = 'draft', rejection_reason = NULL, updated_at = now()
       WHERE time_entries.status IN ('draft', 'rejected')
      RETURNING ${ENTRY_COLS}`,
-    [uid, projectId, activityId, workDate, hours, description]
+    [uid, projectId, activityId, workDate, hours, description, note, noteGiven]
   );
   if (!rows[0]) throw new HttpError(409, 'Deze uren zijn intussen ingediend en kunnen niet meer worden gewijzigd');
   res.json(rows[0]);
@@ -208,6 +212,21 @@ r.post('/submit', ah(async (req, res) => {
       err.code = 'ONBOARDING_REQUIRED';
       throw err;
     }
+  }
+  // "Wat heb je gedaan?" is verplicht op declarabele projecten: die tekst komt op de factuur.
+  const missing = (await query(
+    `SELECT e.work_date, p.name AS project_name FROM time_entries e JOIN projects p ON p.id = e.project_id
+      WHERE e.user_id = $1 AND e.work_date BETWEEN $2 AND $3 AND e.status IN ('draft', 'rejected')
+        AND p.billable AND btrim(e.description) = ''
+      ORDER BY e.work_date, p.name`,
+    [req.user.id, start, end]
+  )).rows;
+  if (missing.length) {
+    const first = missing[0];
+    const err = new HttpError(400, `${missing.length === 1 ? 'Eén regel heeft' : `${missing.length} regels hebben`} nog geen omschrijving `
+      + `(bijvoorbeeld ${first.project_name} op ${first.work_date.split('-').reverse().join('-')}). Vul bij elke regel in wat je hebt gedaan; dat komt op de factuur.`);
+    err.code = 'DESCRIPTION_REQUIRED';
+    throw err;
   }
   const { rowCount } = await query(
     `UPDATE time_entries SET status = 'submitted', rejection_reason = NULL, updated_at = now()

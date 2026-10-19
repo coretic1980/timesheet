@@ -239,3 +239,6 @@ CREATE TABLE IF NOT EXISTS onboarding_files (
   uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS onboarding_files_dossier_idx ON onboarding_files(dossier_id);
+
+-- Interne notitie bij een uurregel (komt niet op de factuur)
+ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS internal_note TEXT;

@@ -990,7 +990,7 @@
       if (e.target.matches('.day-card [data-field]')) saveDayCard(view, e.target.closest('.day-card'));
     });
     view.addEventListener('input', (e) => {
-      if (e.target.matches('.le-desc-input, .dv-desc')) autoGrow(e.target);
+      if (e.target.matches('.le-desc-input, .dv-desc, .dv-note')) autoGrow(e.target);
     });
     view.addEventListener('keydown', (e) => {
       if (e.target.matches('input.hrs') && cellClipboardKey(view, e)) return;
@@ -1103,7 +1103,8 @@
     const mode = effectiveMode();
     box.innerHTML = mode === 'list' ? listHTML(state.sheet) : mode === 'day' ? dayHTML(state.sheet) : gridHTML(state.sheet);
     if (mode === 'day') box.querySelector('.day-chip[aria-pressed="true"]')?.scrollIntoView({ block: 'nearest', inline: 'center' });
-    box.querySelectorAll('.le-desc-input, .dv-desc').forEach(autoGrow);
+    box.querySelectorAll('.le-desc-input, .dv-desc, .dv-note').forEach(autoGrow);
+    box.querySelectorAll('details.note-wrap').forEach((d) => d.addEventListener('toggle', () => d.querySelectorAll('textarea').forEach(autoGrow)));
     refreshSheetChrome(view);
   }
 
@@ -1153,13 +1154,13 @@
         const locked = (e && !EDITABLE.includes(e.status)) || rowLocked;
         const label = rowLabel(r.pid, r.aid);
         return `
-          <td class="cell${dow(d) >= 5 ? ' weekend' : ''}${e ? ` s-${e.status}` : ''}" data-date="${d}">
+          <td class="cell${dow(d) >= 5 ? ' weekend' : ''}${e ? ` s-${e.status}` : ''}${needsDesc(r.pid, e) ? ' needs-desc' : ''}" data-date="${d}">
             <input class="hrs" inputmode="decimal" autocomplete="off" data-date="${d}"
               aria-label="${esc(label)}, ${DAYS_LONG[dow(d)]} ${fmtDate(d)}"
               value="${fmtInput(e && e.hours)}"${locked ? ' disabled' : ''}>
             <button type="button" class="note${e && e.description ? ' has' : ''}" data-date="${d}"
               aria-label="Omschrijving bij ${esc(label)}, ${DAYS_LONG[dow(d)]}"
-              title="${esc((e && e.description) || 'Omschrijving toevoegen')}"></button>
+              title="${esc(noteTitle(r.pid, e))}"></button>
             <span class="grip" aria-hidden="true" title="Sleep naar een andere dag (Ctrl of ⌥ om te kopiëren)"></span>
             <button type="button" class="cellmenu" data-cellmenu="${d}" aria-label="Kopiëren of verplaatsen: ${esc(label)}, ${DAYS_LONG[dow(d)]}" title="Kopiëren of verplaatsen"></button>
           </td>`;
@@ -1203,7 +1204,7 @@
       </div>
       ${canAdd ? '<div class="add-row-bar"><button class="btn" type="button" data-add-row>Regel toevoegen</button></div>' : ''}
       <div class="legend">${LEGEND}
-        <span>Tip: 7:30 wordt 7,5 uur. Enter springt naar de volgende regel. Kopiëren of verplaatsen: klik op ⋯ in een vak, gebruik Ctrl+C / Ctrl+X en Ctrl+V, of sleep een vak aan ⠿ (met Ctrl of ⌥ kopieer je).</span>
+        <span>Oranje vak: omschrijving ontbreekt (verplicht op declarabele projecten, klik op ✎). Tip: 7:30 wordt 7,5 uur. Enter springt naar de volgende regel. Kopiëren of verplaatsen: klik op ⋯ in een vak, gebruik Ctrl+C / Ctrl+X en Ctrl+V, of sleep een vak aan ⠿ (met Ctrl of ⌥ kopieer je).</span>
       </div>`;
   }
 
@@ -1288,8 +1289,12 @@
               ${e ? '<button type="button" class="btn quick-btn ghost" data-quick="0" aria-label="Wissen">×</button>' : ''}
             </div>
           </div>
-          <textarea class="dv-desc" data-field="description" rows="1" maxlength="1000" placeholder="Wat heb je gedaan?"
-            aria-label="Omschrijving ${esc(rowLabel(r.pid, r.aid))}">${esc(e ? e.description : '')}</textarea>`}
+          <textarea class="dv-desc${needsDesc(r.pid, e) ? ' missing' : ''}" data-field="description" rows="1" maxlength="1000"
+            placeholder="Wat heb je gedaan?${p.billable ? ' (verplicht, komt op de factuur)' : ''}"
+            aria-label="Omschrijving ${esc(rowLabel(r.pid, r.aid))}">${esc(e ? e.description : '')}</textarea>
+          <details class="note-wrap"${e && e.internal_note ? ' open' : ''}><summary>Interne notitie</summary>
+            <textarea class="dv-note" data-field="internal_note" rows="1" maxlength="1000" placeholder="${NOTE_HINT}"
+              aria-label="Interne notitie ${esc(rowLabel(r.pid, r.aid))}">${esc(e ? e.internal_note || '' : '')}</textarea></details>`}
         </section>`;
     }).join('');
     return `
@@ -1306,8 +1311,10 @@
     const existing = state.sheet.map.get(key);
     const hoursEl = card.querySelector('.dv-hours');
     const descEl = card.querySelector('.dv-desc');
+    const noteEl = card.querySelector('.dv-note');
     const hours = parseHours(hoursEl.value);
     const description = descEl.value.trim();
+    const note = noteEl ? noteEl.value.trim() : '';
     if (Number.isNaN(hours) || hours < 0 || hours > 24) {
       hoursEl.classList.add('error');
       toast('Vul een aantal uren in tussen 0 en 24, bijvoorbeeld 7,5 of 7:30', true);
@@ -1318,7 +1325,7 @@
       if (description) toast('Vul eerst het aantal uren in');
       return;
     }
-    if (existing && hours === existing.hours && description === existing.description) return;
+    if (existing && hours === existing.hours && description === existing.description && note === (existing.internal_note || '')) return;
     card.classList.add('saving');
     try {
       if (!hours) {
@@ -1326,11 +1333,12 @@
         toast('Uren verwijderd');
       } else {
         const res = await api('/timesheet/entry', {
-          method: 'PUT', body: { project_id: pid, activity_id: aid || null, work_date: d, hours, description },
+          method: 'PUT', body: { project_id: pid, activity_id: aid || null, work_date: d, hours, description, internal_note: note },
         });
         state.sheet.map.set(key, res);
       }
       const now = state.sheet.map.get(key);
+      descEl.classList.toggle('missing', needsDesc(pid, now));
       hoursEl.value = fmtInput(now && now.hours);
       card.classList.toggle('has', Boolean(now));
       card.className = card.className.replace(/\bs-\w+/g, '').trim();
@@ -1398,9 +1406,13 @@
             <div class="le-main">
               <span class="le-date">${dayLabel(e.work_date)}</span>
               ${editable
-                ? `<textarea class="le-desc-input" data-field="description" rows="1" maxlength="1000"
-                     placeholder="Wat heb je gedaan?" aria-label="Omschrijving ${esc(rowLabel(e.project_id, e.activity_id))}, ${dayLabel(e.work_date)}">${esc(e.description)}</textarea>`
-                : `<p class="le-desc">${e.description ? esc(e.description) : '<span class="muted">Geen omschrijving</span>'}</p>`}
+                ? `<textarea class="le-desc-input${needsDesc(e.project_id, e) ? ' missing' : ''}" data-field="description" rows="1" maxlength="1000"
+                     placeholder="Wat heb je gedaan?${p.billable ? ' (verplicht, komt op de factuur)' : ''}" aria-label="Omschrijving ${esc(rowLabel(e.project_id, e.activity_id))}, ${dayLabel(e.work_date)}">${esc(e.description)}</textarea>
+                   <details class="note-wrap"${e.internal_note ? ' open' : ''}><summary>Interne notitie</summary>
+                     <textarea class="le-desc-input le-note" data-field="internal_note" rows="1" maxlength="1000" placeholder="${NOTE_HINT}"
+                       aria-label="Interne notitie ${esc(rowLabel(e.project_id, e.activity_id))}, ${dayLabel(e.work_date)}">${esc(e.internal_note || '')}</textarea></details>`
+                : `<p class="le-desc">${e.description ? esc(e.description) : '<span class="muted">Geen omschrijving</span>'}</p>
+                   ${e.internal_note ? `<p class="le-note-ro muted small">Interne notitie: ${esc(e.internal_note)}</p>` : ''}`}
               ${e.status === 'rejected' && e.rejection_reason ? `<p class="le-reject">Afgekeurd: ${esc(e.rejection_reason)}</p>` : ''}
             </div>
             <div class="le-hours">${editable
@@ -1419,7 +1431,7 @@
         <form class="list-quick" data-row="${r.key}" autocomplete="off">
           <select name="date" aria-label="Dag">${dayOptions(data, defDay)}</select>
           <input name="hours" inputmode="decimal" placeholder="Uren" aria-label="Uren" required>
-          <input name="description" maxlength="1000" placeholder="Wat heb je gedaan?" aria-label="Omschrijving">
+          <input name="description" maxlength="1000" placeholder="Wat heb je gedaan?${p.billable ? ' (verplicht)' : ''}" aria-label="Omschrijving"${p.billable ? ' required' : ''}>
           <button class="btn primary" type="submit">Toevoegen</button>
         </form>` : '';
 
@@ -1440,8 +1452,14 @@
     }).join('');
   }
 
-  // Zet uren op een vak; staat er al iets, dan tellen we op en voegen we de omschrijvingen samen.
-  async function addToCell(pid, aid, date, hours, description) {
+  // "Wat heb je gedaan?" is verplicht op declarabele projecten (komt op de factuur).
+  const descRequired = (pid) => Boolean((projectOf(pid) || {}).billable);
+  const needsDesc = (pid, e) => Boolean(e && EDITABLE.includes(e.status) && descRequired(pid) && !String(e.description || '').trim());
+  const DESC_HINT = 'Verplicht: komt op de factuur';
+  const NOTE_HINT = 'Alleen intern, komt niet op de factuur';
+
+  // Zet uren op een vak; staat er al iets, dan tellen we op en voegen we de omschrijvingen en notities samen.
+  async function addToCell(pid, aid, date, hours, description, note = '') {
     const key = cellKey(pid, aid, date);
     const existing = state.sheet.map.get(key);
     if (existing && !EDITABLE.includes(existing.status)) {
@@ -1450,8 +1468,9 @@
     const total = Math.round(((existing ? existing.hours : 0) + hours) * 100) / 100;
     if (total > 24) throw new Error('Samen wordt dat meer dan 24 uur');
     const desc = [...new Set([existing && existing.description, description].filter(Boolean))].join('; ');
+    const notes = [...new Set([existing && existing.internal_note, note].filter(Boolean))].join('; ');
     const res = await api('/timesheet/entry', {
-      method: 'PUT', body: { project_id: pid, activity_id: aid || null, work_date: date, hours: total, description: desc },
+      method: 'PUT', body: { project_id: pid, activity_id: aid || null, work_date: date, hours: total, description: desc, internal_note: notes },
     });
     state.sheet.map.set(key, res);
     return { res, existing };
@@ -1473,6 +1492,11 @@
     if (!hours || Number.isNaN(hours) || hours < 0 || hours > 24) {
       toast('Vul een aantal uren in tussen 0 en 24, bijvoorbeeld 7,5 of 7:30', true);
       form.hours.focus();
+      return;
+    }
+    if (descRequired(pid) && !form.description.value.trim()) {
+      toast('Vul in wat je hebt gedaan; dat komt op de factuur', true);
+      form.description.focus();
       return;
     }
     try {
@@ -1498,15 +1522,17 @@
     if (!entry) return;
     const hoursEl = li.querySelector('[data-field="hours"]');
     const descEl = li.querySelector('[data-field="description"]');
+    const noteEl = li.querySelector('[data-field="internal_note"]');
     const hours = parseHours(hoursEl.value);
     const description = descEl.value.trim();
+    const note = noteEl ? noteEl.value.trim() : '';
     if (Number.isNaN(hours) || hours < 0 || hours > 24) {
       hoursEl.classList.add('error');
       toast('Vul een aantal uren in tussen 0 en 24, bijvoorbeeld 7,5 of 7:30', true);
       return;
     }
     hoursEl.classList.remove('error');
-    if (hours === entry.hours && description === entry.description) {
+    if (hours === entry.hours && description === entry.description && note === (entry.internal_note || '')) {
       hoursEl.value = fmtInput(entry.hours);
       return;
     }
@@ -1519,10 +1545,11 @@
     try {
       const res = await api('/timesheet/entry', {
         method: 'PUT',
-        body: { project_id: entry.project_id, activity_id: entry.activity_id || null, work_date: entry.work_date, hours, description },
+        body: { project_id: entry.project_id, activity_id: entry.activity_id || null, work_date: entry.work_date, hours, description, internal_note: note },
       });
       state.sheet.map.set(key, res);
       hoursEl.value = fmtInput(res.hours);
+      descEl.classList.toggle('missing', needsDesc(entry.project_id, res));
       // Status kan veranderen (afgekeurd wordt weer concept): rij bijwerken zonder de focus te verliezen.
       li.className = li.className.replace(/\bs-\w+/g, '').trim();
       li.classList.add(`s-${res.status}`);
@@ -1574,7 +1601,7 @@
         const p = projectOf(pid);
         if (!aid && p && activeActivities(p).length) throw new Error('Kies een activiteit');
         if (cellKey(pid, aid, date) === key) return;
-        const { existing } = await addToCell(pid, aid, date, entry.hours, entry.description);
+        const { existing } = await addToCell(pid, aid, date, entry.hours, entry.description, entry.internal_note);
         await clearCell(entry.project_id, entry.activity_id, entry.work_date);
         if (existing) toast(`Opgeteld bij de ${fh(existing.hours)} uur die er al stond`);
         renderSheetBody(view);
@@ -1725,12 +1752,20 @@
     view.querySelector('[data-weektotal]').textContent = fh(week);
   }
 
+  function noteTitle(pid, e) {
+    if (!e) return 'Omschrijving toevoegen';
+    const parts = [e.description || (descRequired(pid) ? 'Omschrijving ontbreekt (verplicht, komt op de factuur)' : 'Omschrijving toevoegen')];
+    if (e.internal_note) parts.push(`Interne notitie: ${e.internal_note}`);
+    return parts.join('\n');
+  }
   function paintCell(td, entry) {
     td.className = td.className.replace(/\bs-\w+/g, '').trim();
     if (entry) td.classList.add(`s-${entry.status}`);
+    const { pid } = parseKey(td.closest('tr').dataset.row);
+    td.classList.toggle('needs-desc', needsDesc(pid, entry));
     const note = td.querySelector('.note');
     note.classList.toggle('has', Boolean(entry && entry.description));
-    note.title = (entry && entry.description) || 'Omschrijving toevoegen';
+    note.title = noteTitle(pid, entry);
   }
 
   async function saveCell(view, input) {
@@ -1844,7 +1879,7 @@
     const src = state.sheet.map.get(cellKey(from.pid, from.aid, fromDate));
     if (!src) return;
     try {
-      const { res, existing } = await addToCell(to.pid, to.aid, toDate, src.hours, src.description);
+      const { res, existing } = await addToCell(to.pid, to.aid, toDate, src.hours, src.description, src.internal_note);
       updateCellUI(view, toRk, toDate, res);
       if (!copy) {
         await clearCell(from.pid, from.aid, fromDate);
@@ -1880,7 +1915,7 @@
     for (const d of dates) {
       if (d === fromDate || !cellFree(view, rk, d) || state.sheet.map.get(cellKey(pid, aid, d))) { skipped += 1; continue; }
       try {
-        const { res } = await addToCell(pid, aid, d, src.hours, src.description);
+        const { res } = await addToCell(pid, aid, d, src.hours, src.description, src.internal_note);
         updateCellUI(view, rk, d, res);
         done += 1;
       } catch (ex) { toast(ex.message, true); break; }
@@ -2000,14 +2035,19 @@
       body: `
         ${entry.rejection_reason ? `<div class="notice error">Afgekeurd: ${esc(entry.rejection_reason)}</div>` : ''}
         <p class="muted small">${fh(entry.hours)} uur, ${STATUS[entry.status].toLowerCase()}</p>
-        <label class="field">Wat heb je gedaan?
-          <textarea name="description" maxlength="1000"${locked ? ' disabled' : ''}>${esc(entry.description)}</textarea>
+        <label class="field">Wat heb je gedaan?<span class="hint">${descRequired(pid) ? DESC_HINT : 'Komt op de factuur als het project declarabel wordt'}</span>
+          <textarea name="description" maxlength="1000"${locked ? ' disabled' : ''}${descRequired(pid) ? ' required' : ''}>${esc(entry.description)}</textarea>
+        </label>
+        <label class="field">Interne notitie<span class="hint">${NOTE_HINT}. Niet verplicht.</span>
+          <textarea name="internal_note" maxlength="1000" rows="2"${locked ? ' disabled' : ''}>${esc(entry.internal_note || '')}</textarea>
         </label>`,
       onSubmit: async (fd) => {
         if (locked) return;
+        const description = String(fd.get('description') || '').trim();
+        if (!description && descRequired(pid)) throw new Error('Vul in wat je hebt gedaan; dat komt op de factuur');
         const res = await api('/timesheet/entry', {
           method: 'PUT',
-          body: { project_id: pid, activity_id: aid || null, work_date: date, hours: entry.hours, description: fd.get('description') },
+          body: { project_id: pid, activity_id: aid || null, work_date: date, hours: entry.hours, description, internal_note: fd.get('internal_note') },
         });
         state.sheet.map.set(key, res);
         paintCell(cellAt(view, rk, date), res);
@@ -2022,10 +2062,29 @@
     const period = month ? { month: week.slice(0, 7) } : { week };
     try {
       if (action === 'submit') {
-        const missing = [...state.sheet.map.values()].filter((e) => EDITABLE.includes(e.status) && !e.description).length;
-        const extra = missing ? ` ${missing === 1 ? 'Eén regel heeft' : `${missing} regels hebben`} nog geen omschrijving.` : '';
+        const missing = [...state.sheet.map.values()].filter((e) => needsDesc(e.project_id, e))
+          .sort((a, b) => a.work_date.localeCompare(b.work_date));
+        if (missing.length) {
+          openDialog({
+            title: 'Omschrijving ontbreekt',
+            submit: 'Invullen',
+            body: `<p>Bij ${missing.length === 1 ? 'deze regel' : `deze ${missing.length} regels`} staat nog niet wat je hebt gedaan. Die tekst komt op de factuur aan de klant, dus vul hem in voordat je indient.</p>
+              <ul class="missing-list">${missing.slice(0, 10).map((e) => `<li><strong>${esc(dayLabel(e.work_date))}</strong> · ${esc(rowLabel(e.project_id, e.activity_id))} · ${fh(e.hours)} uur</li>`).join('')}</ul>
+              ${missing.length > 10 ? `<p class="muted small">En nog ${missing.length - 10} regels.</p>` : ''}
+              <p class="muted small">In het raster zijn deze vakken oranje gemarkeerd; klik op ✎ in het vak.</p>`,
+            onSubmit: () => {
+              const e = missing[0];
+              const rk = rowKey(e.project_id, e.activity_id);
+              setTimeout(() => {
+                if (view.querySelector('table.grid')) openNote(view, rk, e.work_date);
+                else view.querySelector('.missing')?.focus();
+              }, 50);
+            },
+          });
+          return;
+        }
         const label = month ? 'Maand indienen' : 'Week indienen';
-        const ok = await confirmDialog(label, `Na indienen kun je de uren niet meer wijzigen, tenzij je ze terughaalt.${extra}`, label);
+        const ok = await confirmDialog(label, 'Na indienen kun je de uren niet meer wijzigen, tenzij je ze terughaalt.', label);
         if (!ok) return;
         const res = await api('/timesheet/submit', { method: 'POST', body: period });
         toast(`${res.submitted} ${res.submitted === 1 ? 'regel' : 'regels'} ingediend`);
@@ -2355,7 +2414,7 @@
               <td>${statusBadge(x.status)}</td>
               <td>${x.approved_by_name ? `${esc(x.approved_by_name)}<span class="muted small block">${fmtDate(String(x.approved_at).slice(0, 10), true)}</span>` : '<span class="muted">–</span>'}</td>
               <td>${x.invoice_id ? `<button type="button" class="linkish" data-invoice="${x.invoice_id}">${esc(x.invoice_number || `#${x.invoice_id}`)}</button>` : (x.status === 'invoiced' ? '<span class="muted small">buiten de app</span>' : '')}</td>
-              <td class="desc">${esc(x.description) || '<span class="muted">–</span>'}</td>
+              <td class="desc">${esc(x.description) || '<span class="muted">–</span>'}${x.internal_note ? `<span class="muted small block">Interne notitie: ${esc(x.internal_note)}</span>` : ''}</td>
             </tr>`).join('')}</tbody>
           </table></div>` : '<div class="empty"><h2>Geen uren</h2><p>Geen uren voor deze periode en dit filter.</p></div>'}
         </section>
@@ -2525,7 +2584,7 @@
                 <td>${esc(r.client_name || 'Intern')} / ${esc(r.project_name)}${r.activity_name ? `<br><span class="muted small">${esc(r.activity_name)}</span>` : ''}${r.billable ? '' : ' <span class="muted small">(niet declarabel)</span>'}</td>
                 <td class="num">${fh(r.hours)}</td>
                 ${status === 'approved' ? `<td class="num">${eur(r.rate)}</td>` : ''}
-                <td>${esc(r.description) || '<span class="muted">Geen omschrijving</span>'}</td>
+                <td>${esc(r.description) || `<span class="${r.billable ? 'le-reject' : 'muted'}">Geen omschrijving</span>`}${r.internal_note ? `<span class="muted small block">Interne notitie: ${esc(r.internal_note)}</span>` : ''}</td>
               </tr>`).join('')}
             </tbody>
           </table></div>

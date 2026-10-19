@@ -299,7 +299,7 @@ function entryFilters(q) {
 }
 
 const ENTRY_SQL = (where, limit) => `
-  SELECT e.id, e.work_date, e.hours, e.rate, round(e.hours * coalesce(e.rate, 0), 2) AS value, e.status, e.description,
+  SELECT e.id, e.work_date, e.hours, e.rate, round(e.hours * coalesce(e.rate, 0), 2) AS value, e.status, e.description, e.internal_note,
          u.name AS user_name, c.name AS client_name, p.name AS project_name, p.code AS project_code, p.billable,
          ac.name AS activity_name, ab.name AS approved_by_name, e.approved_at,
          e.invoice_id, i.eb_invoice_number AS invoice_number
@@ -332,11 +332,11 @@ r.get('/entries.csv', ah(async (req, res) => {
   const { rows } = await query(ENTRY_SQL(f.where), f.params);
   sendCsv(res, `uren_${f.from}_${f.to}.csv`,
     ['Datum', 'Medewerker', 'Klant', 'Projectcode', 'Project', 'Activiteit', 'Declarabel', 'Uren', 'Tarief', 'Bedrag', 'Status',
-      'Goedgekeurd door', 'Goedgekeurd op', 'Factuur', 'Omschrijving'],
+      'Goedgekeurd door', 'Goedgekeurd op', 'Factuur', 'Omschrijving', 'Interne notitie'],
     rows.map((x) => [
       x.work_date, x.user_name, x.client_name || 'Intern', x.project_code, x.project_name, x.activity_name, x.billable ? 'ja' : 'nee',
       x.hours, x.rate, x.rate === null ? null : x.value, STATUS_NL[x.status], x.approved_by_name,
-      x.approved_at ? new Date(x.approved_at).toISOString().slice(0, 10) : null, x.invoice_number, x.description,
+      x.approved_at ? new Date(x.approved_at).toISOString().slice(0, 10) : null, x.invoice_number, x.description, x.internal_note,
     ]));
 }));
 

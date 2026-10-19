@@ -26,7 +26,7 @@ r.get('/', ah(async (req, res) => {
     period = 'AND e.work_date BETWEEN $2 AND $3';
   }
   const { rows } = await query(
-    `SELECT e.id, e.work_date, e.hours, e.description, e.status, e.rejection_reason, e.rate,
+    `SELECT e.id, e.work_date, e.hours, e.description, e.internal_note, e.status, e.rejection_reason, e.rate,
             u.id AS user_id, u.name AS user_name,
             p.id AS project_id, p.name AS project_name, p.billable, c.name AS client_name,
             e.activity_id, ac.name AS activity_name

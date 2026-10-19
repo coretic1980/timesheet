@@ -1231,3 +1231,18 @@ td.cell.clip-cut { box-shadow: inset 0 0 0 2px var(--brand); background-image: r
 .day-pick:disabled { opacity: 0.35; cursor: not-allowed; }
 .cp-all { width: 100%; margin-top: 0.4rem; }
 .cp-hint { margin-top: 0.6rem !important; }
+
+/* ---------- Omschrijving verplicht en interne notitie ---------- */
+td.cell.needs-desc { background: color-mix(in srgb, var(--brand-soft) 70%, transparent); }
+td.cell.needs-desc .note { opacity: 1; color: var(--brand-ink); font-weight: 700; }
+td.cell.needs-desc .note::before { content: '!'; }
+.dv-desc.missing, .le-desc-input.missing { border-color: var(--brand) !important; background: color-mix(in srgb, var(--brand-soft) 45%, var(--surface)); }
+.dv-desc.missing::placeholder, .le-desc-input.missing::placeholder { color: var(--brand-ink); }
+.note-wrap { margin-top: 0.35rem; }
+.note-wrap summary { cursor: pointer; font-size: 0.82rem; color: var(--muted); width: max-content; }
+.note-wrap summary:hover { color: var(--ink); }
+.note-wrap[open] summary { margin-bottom: 0.25rem; }
+.dv-note { display: block; width: 100%; min-height: 40px; resize: none; overflow: hidden; line-height: 1.4; font-size: 0.92rem; }
+.le-note { font-size: 0.92rem; }
+.le-note-ro { margin: 0.2rem 0 0; }
+.missing-list { margin: 0.25rem 0 0.5rem; padding-left: 1.1rem; display: grid; gap: 0.2rem; }

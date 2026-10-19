@@ -89,7 +89,7 @@ r.get('/export.csv', ah(async (req, res) => {
   const { from, to } = period(req.query);
   const { rows } = await query(
     `SELECT e.work_date, u.name AS user_name, c.name AS client_name, p.code, p.name AS project_name,
-            ac.name AS activity_name, e.hours, e.rate, e.status, e.description, i.eb_invoice_number
+            ac.name AS activity_name, e.hours, e.rate, e.status, e.description, e.internal_note, i.eb_invoice_number
        FROM time_entries e
        JOIN users u ON u.id = e.user_id
        JOIN projects p ON p.id = e.project_id
@@ -100,10 +100,10 @@ r.get('/export.csv', ah(async (req, res) => {
       ORDER BY e.work_date, u.name, p.name`,
     [from, to]
   );
-  const header = ['Datum', 'Medewerker', 'Klant', 'Projectcode', 'Project', 'Activiteit', 'Uren', 'Tarief', 'Status', 'Omschrijving', 'Factuur'];
+  const header = ['Datum', 'Medewerker', 'Klant', 'Projectcode', 'Project', 'Activiteit', 'Uren', 'Tarief', 'Status', 'Omschrijving', 'Interne notitie', 'Factuur'];
   sendCsv(res, `uren_${from}_${to}.csv`, header, rows.map((x) => [
     x.work_date, x.user_name, x.client_name || 'Intern', x.code, x.project_name, x.activity_name, x.hours, x.rate,
-    STATUS_NL[x.status], x.description, x.eb_invoice_number,
+    STATUS_NL[x.status], x.description, x.internal_note, x.eb_invoice_number,
   ]));
 }));
 
