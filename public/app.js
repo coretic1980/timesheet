@@ -2111,14 +2111,22 @@
     const prevMonth = monthBounds(-1);
     const curMonth = monthBounds(0);
     const yearStart = `${today.slice(0, 4)}-01-01`;
-    const [pending, candPrev, candCur, year, week, inhuur] = await Promise.all([
+    const thisWeek = weekStart(today);
+    const [pending, candPrev, candCur, year, week, cur, inhuur, zzp, fin] = await Promise.all([
       api('/approvals?status=submitted'),
       api(`/invoicing/candidates?from=${prevMonth.from}&to=${prevMonth.to}`),
       api(`/invoicing/candidates?from=${curMonth.from}&to=${curMonth.to}`),
       api(`/reports/summary?from=${yearStart}&to=${today}`),
       api(`/reports/summary?from=${lastWeek}&to=${addDays(lastWeek, 6)}`),
+      api(`/reports/summary?from=${thisWeek}&to=${addDays(thisWeek, 6)}`),
       api('/onboarding').catch(() => null),
+      api(`/self-billing/candidates?from=${prevMonth.from}&to=${prevMonth.to}`).catch(() => []),
+      api(`/accountant/overview?from=${yearStart}&to=${today}`).catch(() => null),
     ]);
+
+    const monthName = (b) => MONTHS_LONG[Number(b.from.slice(5, 7)) - 1];
+    const first = (n) => esc(String(n).split(' ')[0]);
+    const names = (list) => (list.length <= 3 ? list.map(first).join(', ') : `${list.slice(0, 2).map(first).join(', ')} en ${list.length - 2} anderen`);
 
     // Te beoordelen, per medewerker.
     const byUser = new Map();
@@ -2129,89 +2137,128 @@
     }
     const pendingHours = pending.reduce((s, r) => s + r.hours, 0);
 
-    // Te factureren: vorige maand eerst (dat is wat je nu factureert), deze maand ter info.
+    // Te factureren: vorige maand (dat factureer je nu), deze maand ter info.
     const billPrev = candPrev.filter((c) => c.hours > 0);
     const prevAmount = billPrev.reduce((s, c) => s + c.amount, 0);
     const curAmount = candCur.reduce((s, c) => s + c.amount, 0);
+    const unlinked = billPrev.filter((c) => !c.eb_relation_id);
+    const zzpOpen = (zzp || []).filter((c) => c.hours > 0);
 
-    // Budgetten die bijna op zijn (minder dan 25% over) of overschreden.
+    // Budgetten, krapste eerst.
     const budgets = [];
     for (const x of year.byActivity || []) {
       if (!x.active) continue;
-      if (x.budget_hours) budgets.push({ label: `${x.client_name || 'Intern'} / ${x.project_name}`, sub: x.activity_name, used: x.hours_all_time, budget: x.budget_hours, unit: 'hours' });
-      else if (x.budget_amount) budgets.push({ label: `${x.client_name || 'Intern'} / ${x.project_name}`, sub: x.activity_name, used: x.value_all_time, budget: x.budget_amount, unit: 'amount' });
+      const base = { client: x.client_name || 'Intern', project: x.project_name, sub: x.activity_name };
+      if (x.budget_hours) budgets.push({ ...base, used: x.hours_all_time, budget: x.budget_hours, unit: 'hours' });
+      else if (x.budget_amount) budgets.push({ ...base, used: x.value_all_time, budget: x.budget_amount, unit: 'amount' });
     }
     for (const x of year.byProject || []) {
-      if (x.active && x.budget_hours) budgets.push({ label: `${x.client_name || 'Intern'} / ${x.name}`, sub: 'Projectbudget', used: x.hours_all_time, budget: x.budget_hours, unit: 'hours' });
+      if (x.active && x.budget_hours) budgets.push({ client: x.client_name || 'Intern', project: x.name, sub: 'Projectbudget', used: x.hours_all_time, budget: x.budget_hours, unit: 'hours' });
     }
-    const tight = budgets.filter((b) => ['low', 'over'].includes(budgetLevel(b.used, b.budget)))
-      .sort((x, y) => (x.budget - x.used) / x.budget - (y.budget - y.used) / y.budget);
+    const leftRatio = (b) => (b.budget - b.used) / b.budget;
+    budgets.sort((x, y) => leftRatio(x) - leftRatio(y));
+    const tight = budgets.filter((b) => ['low', 'over'].includes(budgetLevel(b.used, b.budget)));
+    const over = budgets.filter((b) => b.used > b.budget);
 
-    // Vorige week: wie heeft nog niet (alles) ingediend.
-    const late = (week.byUser || []).filter((u) => u.draft_hours > 0 || u.hours === 0);
+    // Team: vorige week en deze week.
+    const late = (week.byUser || []).filter((u) => u.weekly_hours > 0 && (u.draft_hours > 0 || u.hours === 0));
+    const curBy = new Map((cur.byUser || []).map((u) => [u.id, u]));
+
+    // Inhuur (als die module aanstaat).
+    const inhuurUrgent = inhuur ? inhuur.dossiers.reduce((n, d) => n + d.actions.filter((a) => a[0] === 'bad').length, 0) + (inhuur.enforce ? inhuur.unmanaged.length : 0) : 0;
+
+    // Te doen: alleen wat aandacht vraagt, belangrijkste eerst.
+    const todo = [];
+    if (pending.length) todo.push({ lvl: 'warn', ic: 'check', title: `${pending.length} ${pending.length === 1 ? 'regel' : 'regels'} te beoordelen`, sub: `${fh(pendingHours)} uur van ${names([...byUser.keys()])}`, href: '#/goedkeuren', btn: 'Beoordelen' });
+    if (billPrev.length) todo.push({ lvl: 'accent', ic: 'invoice', title: `${monthName(prevMonth)} factureren: ${eur0(prevAmount)}`, sub: `${billPrev.length} ${billPrev.length === 1 ? 'klant' : 'klanten'}: ${billPrev.slice(0, 3).map((c) => esc(c.name)).join(', ')}${billPrev.length > 3 ? '…' : ''}${unlinked.length ? ` · ${unlinked.length} nog koppelen aan e-Boekhouden` : ''}`, href: '#/facturen', btn: 'Factureren', inv: true });
+    if (zzpOpen.length) todo.push({ lvl: 'accent', ic: 'invoice', title: `zzp'ers afrekenen over ${monthName(prevMonth)}`, sub: zzpOpen.map((c) => `${first(c.name)} ${eur0(c.amount)}`).join(', '), href: '#/facturen/zzp', btn: 'Afrekenen', inv: true });
+    if (late.length) todo.push({ lvl: 'warn', ic: 'clock', title: `Week ${isoWeek(lastWeek)}: ${late.length === 1 ? 'nog niet compleet' : `${late.length} mensen nog niet compleet`}`, sub: late.map((u) => `${first(u.name)} ${u.hours === 0 ? '(niets geschreven)' : `(${fh(u.draft_hours)} uur niet ingediend)`}`).join(', '), href: null });
+    if (inhuurUrgent) todo.push({ lvl: 'low', ic: 'people', title: `Inhuur: ${inhuurUrgent} ${inhuurUrgent === 1 ? 'punt' : 'punten'} om op te pakken`, sub: 'Dossiers met ontbrekende documenten of acties', href: '#/inhuur', btn: 'Bekijken' });
+    if (over.length) todo.push({ lvl: 'low', ic: 'chart', title: `${over.length} ${over.length === 1 ? 'budget' : 'budgetten'} overschreden`, sub: over.slice(0, 2).map((b) => `${esc(b.project)}${b.sub && b.sub !== 'Projectbudget' ? `, ${esc(b.sub)}` : ''}`).join(' · '), href: '#/rapportage', btn: 'Rapportage' });
 
     const tile = (href, label, value, sub, lvl = '') => `
       <a class="panel tile${lvl ? ` tile-${lvl}` : ''}" href="${href}">
         <span class="tile-label">${label}</span><strong class="tile-value">${value}</strong><span class="tile-sub muted small">${sub}</span>
       </a>`;
-    const monthName = (b) => MONTHS_LONG[Number(b.from.slice(5, 7)) - 1];
+    const people = (week.byUser || []).filter((u) => u.weekly_hours > 0 || u.hours > 0);
+    const done = people.filter((u) => u.hours > 0 && u.draft_hours === 0).length;
+    const weekState = (u) => (!u ? '' : u.hours === 0 ? '<span class="badge rejected">Niets</span>'
+      : u.draft_hours > 0 ? `<span class="badge submitted">${fh(u.draft_hours)} u open</span>`
+        : u.submitted_hours > 0 ? '<span class="badge">Te beoordelen</span>' : '<span class="badge approved">Ingediend</span>');
+    const meter = (h, max) => `<span class="meter"><span style="width:${max ? Math.min(100, (h / max) * 100).toFixed(0) : 0}%"></span></span>`;
 
     view.innerHTML = `
-      <div class="stack dash">
-        <div class="row spread"><h1>${greeting()}${state.user.name ? `, ${esc(state.user.name.split(' ')[0])}` : ''}</h1>
+      <div class="stack dash dash2">
+        <div class="row spread"><h1>${greeting()}${state.user.name ? `, ${first(state.user.name)}` : ''}</h1>
           <a class="btn" href="#/uren">${icon('clock')} Uren schrijven</a></div>
         <div class="tiles">
-          ${tile('#/goedkeuren', 'Te beoordelen', pending.length ? `${fh(pendingHours)} uur` : 'Niets', pending.length ? `${pending.length} regels van ${byUser.size} ${byUser.size === 1 ? 'medewerker' : 'medewerkers'}` : 'Alles is beoordeeld', pending.length ? 'warn' : 'ok')}
-          ${tile('#/facturen', `Te factureren ${monthName(prevMonth)}`, eur0(prevAmount), billPrev.length ? `${billPrev.length} ${billPrev.length === 1 ? 'klant' : 'klanten'}, goedgekeurd` : 'Niets meer open', prevAmount ? 'accent' : 'ok')}
-          ${tile('#/rapportage', 'Budgetten bijna op', String(tight.length), tight.length ? 'Minder dan 25% over' : 'Alle budgetten ruim', tight.length ? 'low' : 'ok')}
-          ${inhuur ? (() => {
-            const urgent = inhuur.dossiers.reduce((n, d) => n + d.actions.filter((a) => a[0] === 'bad').length, 0) + (inhuur.enforce ? inhuur.unmanaged.length : 0);
-            const active = inhuur.dossiers.filter((d) => d.status === 'actief').length;
-            return tile('#/inhuur', "Inhuur zzp'ers", urgent ? `${urgent} ${urgent === 1 ? 'punt' : 'punten'}` : 'In orde', `${active} ${active === 1 ? 'opdracht' : 'opdrachten'} vrijgegeven`, urgent ? 'low' : 'ok');
-          })() : ''}
-          ${tile('#/rapportage', 'Week ' + isoWeek(lastWeek) + ' niet ingediend', String(late.length), late.length ? late.map((u) => esc(u.name.split(' ')[0])).join(', ') : 'Iedereen is bij', late.length ? 'warn' : 'ok')}
+          ${tile('#/goedkeuren', 'Te beoordelen', pending.length ? `${fh(pendingHours)} uur` : 'Niets', pending.length ? `${pending.length} regels` : 'Alles is beoordeeld', pending.length ? 'warn' : 'ok')}
+          ${tile('#/facturen', `Te factureren ${monthName(prevMonth)}`, eur0(prevAmount), billPrev.length ? `${billPrev.length} ${billPrev.length === 1 ? 'klant' : 'klanten'}` : 'Alles gefactureerd', prevAmount ? 'accent' : 'ok')}
+          ${tile('#/rapportage', `Goedgekeurd ${monthName(curMonth)}`, eur0(curAmount), 'Nog te factureren', '')}
+          ${tile('#/rapportage', 'Budgetten krap', String(tight.length), tight.length ? `${over.length} overschreden` : 'Alles ruim', tight.length ? 'low' : 'ok')}
         </div>
 
-        <div class="dash-cols">
-          <section class="panel">
-            <div class="panel-pad row spread"><h2>Te beoordelen</h2>${pending.length ? '<a class="btn small" href="#/goedkeuren">Beoordelen</a>' : ''}</div>
-            ${byUser.size ? `<ul class="dash-list">${[...byUser.entries()].map(([n, u]) => `
-              <li><a href="#/goedkeuren"><span>${esc(n)}</span><span class="muted">${u.rows} regels</span><strong>${fh(u.hours)} uur</strong></a></li>`).join('')}</ul>`
-              : '<div class="empty small"><p>Er wacht niets op goedkeuring.</p></div>'}
-          </section>
+        <div class="dash-grid">
+          <div class="dash-main stack">
+            <section class="panel">
+              <div class="panel-pad"><h2>Te doen</h2></div>
+              ${todo.length ? `<ul class="todo">${todo.map((t) => `
+                <li class="todo-${t.lvl}">
+                  <span class="todo-ic" aria-hidden="true">${icon(t.ic)}</span>
+                  <div class="todo-body"><strong>${t.title}</strong><span class="muted small">${t.sub}</span></div>
+                  ${t.href ? `<a class="btn small" href="${t.href}"${t.inv ? ' data-inv-prev' : ''}>${t.btn}</a>` : ''}
+                </li>`).join('')}</ul>`
+                : `<div class="todo-done">${icon('check')}<div><strong>Alles bij</strong><span class="muted small">Er wacht niets op goedkeuring, ${monthName(prevMonth)} is gefactureerd en iedereen heeft week ${isoWeek(lastWeek)} ingediend.</span></div></div>`}
+            </section>
 
-          <section class="panel">
-            <div class="panel-pad row spread"><h2>Factureren</h2><a class="btn small" href="#/facturen" data-inv-prev>${monthName(prevMonth)}</a></div>
-            ${billPrev.length ? `<ul class="dash-list">${billPrev.map((c) => `
-              <li><a href="#/facturen" data-inv-client="${c.id}"><span>${esc(c.name)}</span><span class="muted">${fh(c.hours)} uur${c.eb_relation_id ? '' : ' · nog koppelen'}</span><strong>${eur0(c.amount)}</strong></a></li>`).join('')}</ul>`
-              : `<div class="empty small"><p>Alles van ${monthName(prevMonth)} is gefactureerd.</p></div>`}
-            <p class="panel-pad muted small dash-foot">Deze maand tot nu toe goedgekeurd: <strong>${eur0(curAmount)}</strong></p>
-          </section>
+            <section class="panel">
+              <div class="panel-pad row spread"><h2>Team</h2><span class="muted small">${done} van ${people.length} hebben week ${isoWeek(lastWeek)} ingediend</span></div>
+              <div class="table-wrap"><table class="data team">
+                <thead><tr><th>Medewerker</th><th>Week ${isoWeek(lastWeek)}</th><th></th><th>Deze week</th></tr></thead>
+                <tbody>${people.map((u) => {
+                  const c = curBy.get(u.id);
+                  return `<tr>
+                    <td>${esc(u.name)}</td>
+                    <td class="nowrap">${meter(u.hours, u.weekly_hours || 40)} <span class="small">${u.weekly_hours ? `${fh(u.hours)} / ${fh(u.weekly_hours)}` : `${fh(u.hours)} uur`}</span></td>
+                    <td>${weekState(u)}</td>
+                    <td class="nowrap">${c ? `${meter(c.hours, u.weekly_hours || 40)} <span class="small muted">${fh(c.hours)} uur</span>` : ''}</td>
+                  </tr>`;
+                }).join('')}</tbody>
+              </table></div>
+            </section>
+          </div>
 
-          <section class="panel">
-            <div class="panel-pad row spread"><h2>Budgetten</h2><a class="btn small" href="#/rapportage">Rapportage</a></div>
-            ${tight.length ? `<ul class="dash-list budgets">${tight.slice(0, 6).map((b) => `
-              <li><div><span>${esc(b.label)}</span><span class="muted small">${esc(b.sub)}</span></div>${budgetBar(b.used, b.budget, b.unit)}</li>`).join('')}</ul>`
-              : `<div class="empty small"><p>${budgets.length ? 'Alle budgetten hebben nog meer dan 25% over.' : 'Nog geen budgetten ingesteld. Dat doe je bij Beheer › Projecten › Activiteiten.'}</p></div>`}
-          </section>
+          <div class="dash-side stack">
+            <section class="panel">
+              <div class="panel-pad row spread"><h2>Budgetten</h2><a class="btn small ghost" href="#/rapportage">Alle ${budgets.length ? budgets.length : ''}</a></div>
+              ${budgets.length ? `<ul class="bud-list">${budgets.slice(0, 5).map((b) => {
+                const lvl = budgetLevel(b.used, b.budget);
+                const left = b.budget - b.used;
+                const f = b.unit === 'amount' ? eur0 : (x) => `${fh(x)} u`;
+                return `<li class="lvl-${lvl}">
+                  <div class="bud-top"><span class="bud-name" title="${esc(`${b.client} / ${b.project}`)}">${esc(b.project)}</span><span class="bud-left">${left > 0.005 ? `nog ${f(left)}` : left >= -0.005 ? 'op' : `${f(-left)} over`}</span></div>
+                  <span class="bud-sub muted small">${esc(b.client)}${b.sub && b.sub !== 'Projectbudget' ? ` · ${esc(b.sub)}` : ' · projectbudget'}</span>
+                  <span class="bbar"><span style="width:${Math.min(100, (b.used / b.budget) * 100).toFixed(1)}%"></span></span>
+                </li>`;
+              }).join('')}</ul>${budgets.length > 5 ? `<p class="panel-pad muted small dash-foot">${budgets.length - 5} andere budgetten hebben meer ruimte.</p>` : ''}`
+                : '<div class="empty small"><p>Nog geen budgetten ingesteld. Dat doe je bij Beheer › Projecten › Activiteiten.</p></div>'}
+            </section>
 
-          <section class="panel">
-            <div class="panel-pad"><h2>Week ${isoWeek(lastWeek)}</h2></div>
-            <ul class="dash-list">${(week.byUser || []).map((u) => {
-              const st = u.hours === 0 ? '<span class="badge rejected">Niets geschreven</span>'
-                : u.draft_hours > 0 ? `<span class="badge submitted">${fh(u.draft_hours)} uur niet ingediend</span>`
-                  : u.submitted_hours > 0 ? '<span class="badge">Te beoordelen</span>' : '<span class="badge approved">Ingediend</span>';
-              return `<li><div class="dash-li"><span>${esc(u.name)}</span><span class="muted">${fh(u.hours)} / ${fh(u.weekly_hours)} uur</span>${st}</div></li>`;
-            }).join('')}</ul>
-          </section>
+            ${fin ? `<section class="panel panel-pad stack month-box">
+              <div class="row spread"><h2>Financieel</h2><a class="btn small ghost" href="#/controle">Controle</a></div>
+              <dl class="facts">
+                <dt>Gefactureerd ${monthName(curMonth)}</dt><dd>${eur0((fin.invoices.by_month.find((m) => m.month === today.slice(0, 7)) || {}).total_excl || 0)}</dd>
+                <dt>Gefactureerd ${today.slice(0, 4)}</dt><dd><strong>${eur0(fin.invoices.total_excl)}</strong></dd>
+                <dt>Onderhanden werk</dt><dd>${eur0(fin.ohw.approved_value + fin.ohw.open_value)}</dd>
+                ${fin.purchases && fin.purchases.count ? `<dt>Ingekocht zzp ${today.slice(0, 4)}</dt><dd>${eur0(fin.purchases.total_excl)}</dd>` : ''}
+              </dl>
+              <p class="muted small" style="margin:0">Bedragen excl. btw. Onderhanden werk: gewerkte declarabele uren die nog niet gefactureerd zijn.</p>
+            </section>` : ''}
+          </div>
         </div>
       </div>`;
 
-    view.querySelector('[data-inv-prev]').addEventListener('click', () => { state.invoicePeriod = prevMonth; });
-    view.querySelectorAll('[data-inv-client]').forEach((l) => l.addEventListener('click', () => {
-      state.invoicePeriod = prevMonth;
-      state.openInvoiceClient = Number(l.dataset.invClient);
-    }));
+    view.querySelectorAll('[data-inv-prev]').forEach((l) => l.addEventListener('click', () => { state.invoicePeriod = prevMonth; }));
   }
 
   /* ================= Controle (accountant) ================= */

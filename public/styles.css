@@ -1246,3 +1246,44 @@ td.cell.needs-desc .note::before { content: '!'; }
 .le-note { font-size: 0.92rem; }
 .le-note-ro { margin: 0.2rem 0 0; }
 .missing-list { margin: 0.25rem 0 0.5rem; padding-left: 1.1rem; display: grid; gap: 0.2rem; }
+
+/* ---------- Overzicht v2: twee doorlopende kolommen ---------- */
+.dash-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr); gap: 0.9rem; align-items: start; }
+.dash-main, .dash-side { min-width: 0; }
+.dash2 .stack > * + * { margin-top: 0.9rem; }
+.todo { list-style: none; margin: 0; padding: 0 0.4rem 0.45rem; }
+.todo li { display: grid; grid-template-columns: auto 1fr auto; gap: 0.8rem; align-items: center; padding: 0.7rem 0.75rem; border-radius: var(--radius-s); }
+.todo li + li { border-top: 1px solid var(--line-soft); }
+.todo-ic { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--line-soft); color: var(--muted); }
+.todo-ic .ico { width: 18px; height: 18px; }
+.todo-warn .todo-ic { background: color-mix(in srgb, var(--submitted) 16%, transparent); color: var(--submitted); }
+.todo-accent .todo-ic { background: var(--brand-soft); color: var(--brand-ink); }
+.todo-low .todo-ic { background: color-mix(in srgb, var(--rejected) 14%, transparent); color: var(--rejected); }
+.todo-body { display: grid; gap: 0.1rem; min-width: 0; }
+.todo-done { display: flex; gap: 0.8rem; align-items: center; padding: 0 1.25rem 1.2rem; }
+.todo-done > .ico { width: 34px; height: 34px; padding: 7px; border-radius: 50%; background: color-mix(in srgb, var(--approved) 16%, transparent); color: var(--approved); flex: none; }
+.todo-done > div { display: grid; gap: 0.1rem; }
+table.data.team td { vertical-align: middle; }
+.meter { display: inline-block; vertical-align: middle; width: 72px; height: 6px; border-radius: 3px; background: var(--line-soft); overflow: hidden; margin-right: 0.35rem; }
+.meter > span { display: block; height: 100%; background: var(--brand); border-radius: 3px; }
+.bud-list { list-style: none; margin: 0; padding: 0 1.1rem 0.6rem; display: grid; gap: 0.75rem; }
+.bud-list li { display: grid; gap: 0.25rem; }
+.bud-top { display: flex; justify-content: space-between; gap: 0.75rem; align-items: baseline; }
+.bud-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.bud-left { font-size: 0.82rem; font-weight: 600; white-space: nowrap; color: var(--approved); }
+.bud-list .lvl-warn .bud-left { color: var(--submitted); }
+.bud-list .lvl-low .bud-left, .bud-list .lvl-over .bud-left { color: var(--rejected); }
+.bud-list .bbar { display: block; min-width: 0; }
+.bud-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.month-box .facts { grid-template-columns: 1fr auto; }
+.month-box .facts dd { text-align: right; }
+@media (max-width: 980px) { .dash-grid { grid-template-columns: 1fr; } }
+@media (max-width: 760px) {
+  .todo li { grid-template-columns: auto 1fr; }
+  .todo li > .btn { grid-column: 2; justify-self: start; }
+  table.data.team th:nth-child(3), table.data.team td:nth-child(3) { display: table-cell; }
+}
+
+.bud-list li { gap: 0.15rem; }
+.bud-list .bbar { margin-top: 0.2rem; }
+.month-box > p { margin-top: 0.4rem !important; }
