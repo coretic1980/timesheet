@@ -101,17 +101,20 @@ const SELFBILL_DEFAULTS = {
   process: true,            // inkoopboeking maken in e-Boekhouden
   costLedgerId: null,       // bijv. 7000 Inkoop / uitbesteed werk
   creditorLedgerId: null,   // bijv. 1600 Crediteuren
-  companyName: '',
+  companyName: 'DVN Technology B.V.',
   companyAddress: '',
   companyPostalCode: '',
   companyCity: '',
-  companyKvk: '',
-  companyVat: '',
+  companyKvk: '99083523',
+  companyVat: 'NL868787255B01',
 };
 
 async function getSelfBillSettings() {
   const { rows } = await query(`SELECT value FROM settings WHERE key = 'selfbill'`);
-  return { ...SELFBILL_DEFAULTS, ...(rows[0] ? rows[0].value : {}) };
+  const s = { ...SELFBILL_DEFAULTS, ...(rows[0] ? rows[0].value : {}) };
+  // Lege bedrijfsgegevens terugvallen op de vaste gegevens van DVN Technology B.V.
+  for (const k of ['companyName', 'companyKvk', 'companyVat']) if (!s[k]) s[k] = SELFBILL_DEFAULTS[k];
+  return s;
 }
 
 async function setSelfBillSettings(value) {
