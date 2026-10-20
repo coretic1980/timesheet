@@ -20,6 +20,9 @@ const pool = new Pool({
   ssl: process.env.DATABASE_SSL === 'false' ? false
     : { rejectUnauthorized: process.env.DATABASE_SSL !== 'no-verify' },
   max: Number(process.env.DATABASE_POOL_MAX || 5),
+  // Ongebruikte verbindingen snel sluiten, zodat Neon na een paar minuten stilte kan pauzeren.
+  idleTimeoutMillis: 10000,
+  allowExitOnIdle: false,
 });
 
 const query = (text, params) => pool.query(text, params);

@@ -28,7 +28,11 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get('/healthz', async (req, res) => {
+// Health check voor Render: raakt de database NIET aan. Render vraagt dit elke paar seconden op;
+// met een databasequery zou Neon nooit in slaap vallen en gaat de gratis rekentijd 24/7 door.
+app.get('/healthz', (req, res) => res.json({ ok: true }));
+// Handmatige controle inclusief database (niet als health check gebruiken).
+app.get('/healthz/db', async (req, res) => {
   try {
     await pool.query('SELECT 1');
     res.json({ ok: true });
